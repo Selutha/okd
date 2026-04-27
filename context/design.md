@@ -17,7 +17,7 @@
 
 ### 1.1 Layering
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Layer 0 — Provisioning & Lifecycle                                      │
 │  Foreman (existing)                                                      │
@@ -161,8 +161,8 @@ These VIPs must be load-balanced across the 3 masters (API) and the ingress cont
 
 ### 4.4 Backup posture
 
-- RKE2's native etcd snapshot feature (`/var/lib/rancher/rke2/server/db/snapshots/`) — schedule every 6 h, retain 28.
-- Ship snapshots off-cluster (S3 or NFS).
+- RKE2's native etcd snapshot feature (default location: `/var/lib/rancher/rke2/server/db/snapshots/`). RKE2 default schedule per [the RKE2 backup docs](https://docs.rke2.io/datastore/backup_restore) is twice daily (00:00 and 12:00), 5 snapshots retained. **Recommended override** for the mgmt cluster: tighten to every 6 hours with retention of 28, and configure S3 upload to FlashBlade.
+- Ship snapshots off-cluster (S3 or NFS) — RKE2 has built-in S3 upload support; no separate tool needed.
 - VMware snapshots are useful for **pre-change rollback** of the VMs themselves but are **not a substitute** for etcd snapshots — VM snapshots of a running etcd member can capture inconsistent state. **See Decision DR-3.**
 
 ---
@@ -195,6 +195,7 @@ Required Virtual Services per cluster:
 | `*.apps.<cluster>.<base>` | 80/TCP, 443/TCP | TCP passthrough (preserve TLS to ingress controller) | All worker nodes (or just ingress-router-bearing ones) | TCP 1936 (router stats) or TCP 443 |
 
 Notes:
+
 - **Don't terminate TLS at Kemp for `*.apps`** — terminate at the OKD ingress controller (HAProxy router) so cluster-managed certs work and so workloads that need mTLS pass-through still can. Kemp is L4 here, not L7.
 - **MCS (22623)** is required during install and node-join. It can be on the same VIP as the API or a separate VIP — same VIP is simpler.
 - Confirm the Kemp's data-path interfaces are reachable from both `okd-infra-node` and `okd-gpu-node` VLANs (Section 5.1) and from the masters' subnet for the loop-back path nodes use to reach `api-int`.
@@ -227,11 +228,12 @@ OKD will refuse to start or behave unpredictably with skewed clocks. Every node 
 
 ### 6.2 B200 specifics
 
-- B200 requires a recent driver branch (R570+ at time of writing). Verify the GPU Operator version you pin actually ships that branch.
-- B200 requires CUDA 12.8+ in user images.
-- FCOS kernel must have IOMMU enabled and be recent enough for the driver. Check your target OKD release's FCOS kernel version against NVIDIA's compat matrix before committing.
-- Power & cooling: B200 SXM systems pull 1000W+ per GPU. Make sure the bare-metal hosts and rack PDUs are sized for it.
+- B200 requires NVIDIA driver branch **R570+** (per [NVIDIA GPU Operator/RKE2 docs](https://docs.rke2.io/add-ons/gpu_operators), HGX B200 needs driver 570.133.20+). Verify the GPU Operator version you pin actually ships that branch.
+- B200 typically pairs with **CUDA 12.8+** in user images — verify against NVIDIA's CUDA-driver compatibility matrix for the specific NVIDIA driver version you pin.
+- FCOS/SCOS kernel must have IOMMU enabled and be recent enough for the driver. Check your target OKD release's kernel version against NVIDIA's compat matrix before committing.
+- Power & cooling: NVIDIA's HGX B200 specifications cite ~1000W per GPU. Make sure the bare-metal hosts and rack PDUs are sized for steady-state, not just rated burst.
 - If using SXM modules, MIG partitioning behavior differs from H100 — confirm with the inference workload owners whether MIG is needed or full-GPU allocation.
+- **B300 considerations: TBD until the hardware ships at scale.** Driver branch and CUDA requirements aren't fully published for B300 at the time this doc was written; treat any specific version claim as provisional and re-verify against NVIDIA's compatibility matrix when B300 SKUs are in your hands.
 
 ### 6.3 Scheduling
 
@@ -318,6 +320,7 @@ OKD's GPU Operator path has a **smaller blast radius per upgrade** because it on
 ## 9. Deployment Sequencing
 
 **Phase 0 — Prerequisites (existing or to confirm)**
+
 1. VMware capacity: ≥ 9 VMs at planned size + headroom (3 Rancher + 3 masters/cluster × 2 clusters; bootstrap VMs short-lived).
 2. Bare-metal hardware racked, BMC accessible from Foreman.
 3. VLANs + L3 + firewall rules (per Section 5.1).
@@ -328,11 +331,13 @@ OKD's GPU Operator path has a **smaller blast radius per upgrade** because it on
 8. DDN Lustre: identify which DDN Lustre filesystem(s) the OKD-GPU workers will mount; obtain DDN CSI driver release matched to the target OKD/FCOS kernel; confirm DDN support contract covers FCOS/RHCOS.
 
 **Phase 1 — Management plane**
+
 1. Foreman: confirm DHCP/TFTP/PXE working for both RHEL kickstart and FCOS PXE.
 2. Configure Kemp Virtual Services for OKD-Infra (api, api-int/MCS, *.apps) per Section 5.2; backends will report unhealthy until masters exist — that's expected.
 3. Build 3 Rancher RKE2 VMs; install RKE2; install Rancher.
 
 **Phase 2 — OKD-Infra cluster**
+
 1. Generate install-config.yaml; render Ignition.
 2. Provision FCOS bootstrap VM and 3 master VMs (Ignition via guestinfo or HTTP).
 3. PXE-boot bare-metal workers via Foreman pointing at worker.ign.
@@ -341,17 +346,20 @@ OKD's GPU Operator path has a **smaller blast radius per upgrade** because it on
 6. Import into Rancher.
 
 **Phase 3 — OKD-GPU cluster**
+
 1. Repeat Phase 2 with cluster-specific VIPs, hostnames, CIDRs.
 2. Install NFD Operator → GPU Operator → (optional) Network Operator.
 3. Validate `nvidia-smi` from a test pod on each GPU worker.
 4. Import into Rancher.
 
 **Phase 4 — Operationalize**
+
 1. Schedule etcd backups on both OKD clusters; verify a restore in a test environment.
 2. Document and rehearse the full disaster-recovery playbook.
 3. Onboard the first real workload to OKD-Infra; the first inference workload to OKD-GPU.
 
 **Phase 5 — Future**
+
 - OKD-GPU-2 mirror cluster — repeat Phase 3 with new VIPs/CIDRs/DNS. Determine whether it's DR (cold/warm standby) or active (front-ended by a higher-level LB).
 
 ---
@@ -366,12 +374,14 @@ OKD's GPU Operator path has a **smaller blast radius per upgrade** because it on
 ### 10.2 Adding a third cluster (mirror inference)
 
 Reusable as-is:
+
 - Foreman host groups, Puppet modules, RKE2/Rancher (just import the new cluster).
 - LB VM pair pattern.
 - DNS sub-zone pattern.
 - GPU operator stack.
 
 Needs new design:
+
 - New unique CIDRs (pod, service, node).
 - Decision: is it DR (cold/warm) or active second site? Affects whether a global LB or DNS-based traffic split sits in front.
 - If geographically separate, latency to Rancher matters less than network reachability — confirm Rancher can reach both clusters' API VIPs.
@@ -387,22 +397,26 @@ Needs new design:
 > Each item is something in the original plan that I think warrants a second look before we commit. The IDs are referenced from earlier sections.
 
 ### DR-1 — Separate ETCD nodes from control plane
+
 **Original plan:** "3 control plane (head) nodes — VMs in VMware; 3 ETCD nodes — VMs in VMware".
 **Issue:** OKD's cluster-etcd-operator deploys etcd as static pods on master nodes. There is no supported topology that runs etcd on separate machines. Going off-script means you self-manage etcd, lose operator-driven upgrades and cert rotation, and likely fail conformance.
 **Recommendation:** Drop the separate etcd tier. Keep the 3 masters; etcd lives on them. This saves 6 VMs across two clusters and aligns with the supported path.
 **Counter-argument:** If the goal was etcd performance isolation, the right answer is fast local NVMe on the master VMs (already standard guidance — etcd needs <10 ms fsync), not separate machines.
 
 ### DR-2 — Worker OS and the role of Puppet on OKD nodes
+
 **Status:** 🟡 **Pending — user evaluating.** Not locked. Revisit after background reading.
 
 **Original plan:** "Workers are standard RHEL with a Puppet config to apply settings and the OKD worker binary."
 
 **Context that makes this non-trivial:**
+
 - The user's org is a Foreman / Katello + Puppet shop. Puppet is the existing delivery path for SSH keys, Lustre kernel modules, NVIDIA drivers, and general host config across the RHEL/Rocky fleet.
 - Changing the OKD worker config model doesn't retool the whole org — Puppet/Katello still owns Foreman itself, the Rancher RKE2 VMs, the bastion, the install host, and any other RHEL/Rocky admin VMs. The scope of change is *only* the OKD worker config surface.
 - Worker GPU mix is L40 + B200 + B300, which raises the stakes on whichever driver-delivery path is chosen (see §6).
 
 **Issue with the original plan as written:**
+
 - There is no "OKD worker binary" that Puppet installs onto RHEL to produce a working OKD worker. OKD's worker join flow is Ignition → Machine Config Server → Machine Config Operator, and MCO expects an FCOS/SCOS host it can manage.
 - RHEL compute nodes were a *first-class supported* path in Red Hat's paid OCP product via `openshift-ansible` scaleup playbooks. That path was **deprecated in OCP 4.16** and slated for removal. It was never first-class in OKD.
 - The node OS itself is mid-transition: **OKD 4.16 shifted from Fedora CoreOS (FCOS) to CentOS Stream CoreOS (SCOS)**. New clusters still boot an FCOS live image but pivot to SCOS during init. SCOS is philosophically closer to RHEL than FCOS was.
@@ -415,6 +429,7 @@ Needs new design:
 | **B — RHEL workers self-managed with Puppet** | Foreman provisions RHEL; Puppet installs CRI-O, kubelet, kubelet config, kube-proxy/OVN-K bits, certs, NVIDIA drivers, Lustre client. Manual CSR approval for join. | Keeps existing Puppet pipeline end-to-end. Familiar tooling for the whole host lifecycle. | No documented OKD path — you own join flow and day-2 forever. OKD upgrades don't coordinate kubelet upgrades on these nodes. NVIDIA GPU Operator's containerized driver model conflicts with host-installed drivers, so the Operator benefits (multi-driver-branch for L40/B200/B300, DCGM, MIG mgmt) are lost or require parallel solutions. |
 
 **Current lean (not locked):** Option A, on these grounds:
+
 - Puppet stays fully in use for everything that isn't an OKD node (Rancher, bastion, Foreman itself, any other VMs). Scope of change is bounded.
 - Mixed GPU architectures (L40 / B200 / B300) make the GPU Operator's per-node-pool driver model strongly preferable to a hand-rolled Puppet equivalent.
 - MachineConfig has direct analogs for the things Puppet currently does on hosts (sysctls, kernel args, file drops, systemd units, SSH keys, rpm-ostree layered packages).
@@ -422,33 +437,39 @@ Needs new design:
 **Reading to inform the decision:**
 
 *Worker OS — what FCOS/SCOS actually is and what it implies:*
+
 - [Fedora CoreOS — OKD 4 Architecture](https://docs.okd.io/latest/architecture/architecture-rhcos.html) — canonical node-OS architecture page.
 - [Preparing to install on bare metal — OKD 4](https://docs.okd.io/latest/installing/installing_bare_metal/preparing-to-install-on-bare-metal.html) — install flow showing the Ignition/MCS expectations for nodes.
 - [Machine configuration overview — OKD 4](https://docs.okd.io/latest/machine_configuration/index.html) — what MCO manages on every node (kernel, CRI-O, kubelet, systemd, NetworkManager, files).
 - [Machine Config Daemon metrics — OKD 4.14](https://docs.okd.io/4.14/nodes/nodes/nodes-nodes-machine-config-daemon-metrics.html) — the drift-detection loop that makes Puppet-on-OKD-nodes a drift war.
 
 *Retirement of RHEL workers in OCP:*
+
 - [OCP 4.16 Release Notes — RHEL compute machines deprecated](https://docs.openshift.com/container-platform/4.16/release_notes/ocp-4-16-release-notes.html) — the announcement.
 - [OCP 4.18 Release Notes](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/release_notes/ocp-4-18-release-notes) — deprecation continues; removal forthcoming.
 - [OpenShift Nodes documentation — RHEL compute machines](https://access.redhat.com/documentation/en-us/openshift_container_platform/4.13/html-single/nodes/index) — last version of OCP with a robust RHEL-worker story, useful for understanding what's being sunset.
 
 *The FCOS → SCOS (CentOS Stream CoreOS) flip:*
+
 - [Node Operating System changes to SCOS — OKD upgrade notes](https://okd.io/docs/project/upgrade-notes/from-4-15/fcos-to-scos-migration/) — the migration doc (new clusters now target SCOS; FCOS is only used as the live-install image before pivot).
 - [OKD 4.16 release announcement (okd.io blog)](https://okd.io/blog/) — landing page; scan for the 4.16 release post for the SCOS context.
 
 **Decision gate:** pick A or B before Phase 2 begins. The answer determines Foreman host-group templates, Ignition vs kickstart for workers, and whether the NVIDIA GPU Operator or Puppet owns driver lifecycle on GPU workers.
 
 ### DR-3 — VMware snapshot as Rancher backup mechanism
+
 **Original plan:** "VMware snapshots after stable configuration… snapshot rollback is the recovery path."
 **Issue:** A VMware snapshot of a *running* etcd member can capture an inconsistent state mid-write. Restoring it can leave the etcd cluster unable to form quorum. VMware snapshots also accumulate delta files that hurt I/O if left in place.
 **Recommendation:** Use RKE2's native etcd snapshot feature as primary backup. Use VMware snapshots only as short-lived pre-change rollback markers (delete within hours), not as a recovery mechanism.
 
 ### DR-4 — Mirror cluster purpose unspecified
+
 **Original plan:** "A future third cluster may be added as a mirror of the inference cluster."
 **Issue:** "Mirror" can mean DR (cold/warm), HA (active/active behind a global LB), or capacity overflow. Each implies different networking, data-replication, and operational design.
 **Recommendation:** Defer the design but write down the *intent* now so Phase 1 networking choices don't paint you into a corner (e.g., overlapping CIDRs, single-region DNS).
 
 ### DR-5 — Rancher's role w.r.t. OKD upgrades
+
 **Original plan implies:** "Rancher handles ongoing management, updates."
 **Issue:** Rancher does not drive OKD upgrades. OKD upgrades go through CVO. Rancher's "upgrade" buttons apply to RKE/RKE2/K3s clusters it provisioned.
 **Recommendation:** Set the expectation in runbooks: Rancher is for visibility, RBAC, app catalog, kubectl access. OKD lifecycle stays with `oc adm upgrade`.
@@ -460,6 +481,7 @@ Needs new design:
 > Things missing from the original plan that need to be designed before Phase 2.
 
 ### G-1 — etcd backup automation on OKD
+
 There is no etcd backup unless you build one. Action: deploy a CronJob that runs `cluster-backup.sh` on a master, ships the tarball to S3/NFS, and prunes by age. Test restore.
 
 ### G-2 — Persistent storage strategy — Pure Storage + DDN Lustre
@@ -476,6 +498,7 @@ There is no etcd backup unless you build one. Action: deploy a CronJob that runs
 | Training datasets / scratch / checkpointing | **Lustre** | RWX | Parallel filesystem is the right shape here |
 
 **Implementation:**
+
 - **Pure CSI driver** (`pure-csi`) installs cleanly on OKD via the certified operator. One install per cluster. Two backends configurable in one driver instance (FlashArray + FlashBlade).
 - **Lustre client on FCOS** is the hard part. FCOS is immutable + rpm-ostree, so `dnf install lustre-client` on the host is not the path. Four options:
   1. **DDN Lustre CSI driver** ✅ — vendor-supported CSI from DDN, dynamic PV provisioning, k8s-native integration. The Lustre backend is DDN, so this is the supported, on-the-rails path and the chosen storage-orchestration layer. **Caveat:** the CSI driver still needs the Lustre client kernel module present on the host — it orchestrates mounts, it doesn't ship the kernel module by itself. So this option pairs with one of (2)/(3) below for the actual module delivery, but the operational layer (StorageClass, PVC, mount lifecycle) is owned by DDN's driver instead of homemade glue. Verify FCOS/RHCOS support against DDN's compatibility matrix for the OKD release you target.
@@ -487,6 +510,7 @@ There is no etcd backup unless you build one. Action: deploy a CronJob that runs
 **Open sub-decision:** which workloads land on FlashArray vs FlashBlade. Mostly determined by RWX needs and IO profile; settle when the first workloads are scoped.
 
 ### G-3 — Container registry strategy
+
 OKD ships an internal registry (operator-managed) that defaults to `emptyDir` (i.e., useless). It needs persistent backing. Separately, for B200 inference images (often 5–15 GB each), a pull-through cache to your enterprise registry is strongly advised to avoid pulling from Docker Hub / NGC repeatedly.
 
 ### G-4 — Identity / OAuth integration — Active Directory
@@ -501,26 +525,33 @@ OKD ships an internal registry (operator-managed) that defaults to `emptyDir` (i
 Recommendation: **OIDC via Keycloak** if you have or plan to have more than one or two platforms integrating with AD. **Direct LDAP** if OKD is and will remain the only consumer. For an enterprise Red Hat shop with growing platform count, Keycloak usually wins within 12–18 months.
 
 In either case:
+
 - Service account in AD for the bind (least-privilege OU read).
 - Group sync configured so OKD RBAC can reference AD groups.
 - `htpasswd` identity provider stays only as a break-glass admin path, on a separate provider name.
 
 ### G-5 — Monitoring / logging / alerting
+
 OKD ships cluster-monitoring (Prometheus, Alertmanager, Grafana) and cluster-logging (optional). Where do alerts go? PagerDuty? Email? Where do logs go long-term? These need PVs and external sinks; not free.
 
 ### G-6 — Air-gap / disconnected install posture
+
 Are these clusters internet-connected, proxied, or fully disconnected? OKD installs and ongoing operator updates assume access to Quay.io and other registries unless you mirror. RHEL shops often go disconnected; if you do, plan a mirror registry (`oc-mirror`) and offline operator catalog.
 
 ### G-7 — Secrets management
+
 Sealed Secrets, External Secrets Operator + Vault, or native? Decide before workloads land.
 
 ### G-8 — Network ingress for workloads
+
 Default Ingress Controller on `*.apps.<cluster>` is fine for HTTP. If GPU inference exposes gRPC at scale, plan for an ingress that does HTTP/2 properly (HAProxy router does, but tuning is non-trivial), or run a dedicated gateway (Envoy / Istio / Gateway API).
 
 ### G-9 — Capacity planning
+
 Worker count is "TBD". For early planning, even a target range (e.g., infra: 4–8 nodes, GPU: 4 B200 hosts × 8 GPU = 32 GPUs) lets you size LB VMs, IP space, and storage. Pin a starting number even if it's wrong; revise.
 
 ### G-10 — Change management / promotion
+
 Two clusters and a future third — how are workload manifests promoted? GitOps with ArgoCD or Flux? Per-cluster app-of-apps? This is a Phase-4 question but the answer constrains how Rancher's projects/RBAC are structured.
 
 ---
@@ -528,11 +559,13 @@ Two clusters and a future third — how are workload manifests promoted? GitOps 
 ## 13. Open Questions for the Next Iteration
 
 **Resolved in v0.2 (2026-04-24):**
+
 - ~~LB option~~ → Kemp LoadMaster (Section 5.2).
 - ~~Storage option~~ → Pure Storage + Lustre (G-2).
 - ~~Identity provider~~ → Active Directory (G-4); LDAP-direct vs OIDC-via-Keycloak still TBD.
 
 **Still open:**
+
 1. Confirm DR-1 (collapse separate etcd tier into masters) before any VM provisioning.
 2. DR-2: worker OS + Puppet role on OKD nodes. Pending user reading — reading links in §DR-2. Current lean is Option A (SCOS workers, MCO-managed; Puppet retained for non-OKD hosts).
 3. Pick install method (agent-based vs UPI) from Section 3.2.

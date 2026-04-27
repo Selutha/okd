@@ -88,6 +88,7 @@ This is meaningful for a small team operating multiple clusters: with RKE2, Ranc
 ### 3.3 What you assemble vs. what comes pre-built
 
 **OKD includes (without further deployment):**
+
 - Internal image registry (operator)
 - HAProxy ingress router (operator)
 - OAuth server with LDAP/OIDC/htpasswd providers
@@ -99,11 +100,13 @@ This is meaningful for a small team operating multiple clusters: with RKE2, Ranc
 - Cluster Version Operator for atomic upgrades
 
 **RKE2 includes:**
+
 - ingress-nginx (toggleable; can disable to bring your own)
 - CoreDNS, metrics-server, Helm controller
 - CIS-aligned defaults; FIPS-mode binary available
 
 **RKE2 needs you to deploy yourself:**
+
 - Image registry (Harbor is the common answer; or external pull-through)
 - OAuth/OIDC for cluster auth (Keycloak/Dex/Authentik in front of AD)
 - Monitoring stack (`kube-prometheus-stack` is the standard)
@@ -150,6 +153,7 @@ The relevant Slinky options for this user:
 Slinky requirements (per [SchedMD docs](https://slinky.schedmd.com/projects/slurm-operator)): Kubernetes ≥ v1.29, Slurm ≥ 25.11, cgroup v2. **Both OKD 4.17+ and RKE2 1.30+ meet the k8s requirement.** Cgroup v2 is default on FCOS/SCOS and available on RHEL 9.
 
 **Where each platform stands:**
+
 - RKE2 is the more commonly-tested target for Slinky in HPC contexts. Containerd, plain RHEL hosts, no MCO interfering with cgroup config — fewer moving parts when something doesn't work.
 - OKD adds the SCC + MCO layer. Slinky on OpenShift has been demonstrated but requires SCCs to grant the required privileges to slurm-operator pods, and the slurmd image (built on Ubuntu 24.04, GLIBC 2.38) needs to run as a non-root SCC-compatible workload, which means custom SCC wiring. Doable, more friction.
 
@@ -159,7 +163,7 @@ For "we want the door open to Slinky later" — RKE2 has less friction. Not a de
 
 The NVIDIA GPU Operator is supported and well-documented on both platforms. Rancher and Red Hat both publish official guides. Specifics:
 
-- **B200 / B300 require driver branch R570+ (B200) and likely R580+ (B300 when shipping).** Both platforms get this via the GPU Operator's containerized driver — the driver isn't installed on the host, it's loaded by a privileged driver pod that matches the running kernel.
+- **B200 requires driver branch R570+** (NVIDIA GPU Operator docs cite 570.133.20+ for HGX B200). **B300 driver branch is TBD** until B300 hardware is in hand and NVIDIA's compatibility matrix is verified — assume the latest production branch at that time. Both platforms get drivers via the GPU Operator's containerized driver pod, not host install.
 - **L40 + B200 + B300 in the same fleet:** Different GPU pools labelled by Node Feature Discovery; multiple ClusterPolicy / per-node-pool driver branch configurations. Same approach on both platforms.
 - **GPU Operator install/upgrade impact differs by platform:**
   - **RKE2:** the toolkit DaemonSet writes containerd config and SIGHUPs containerd. Because RKE2 supervises containerd, the SIGHUP cascades into an RKE2 restart on the node — kubelet bounces, all pods on the node briefly NotReady. Per [NVIDIA's docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/install-gpu-operator.html) this happens "during installation and upgrades," so plan a maintenance window or rolling-drain for any toolkit-image bump.
@@ -283,6 +287,7 @@ Score each criterion as it applies to your situation. (I've filled in my read; c
 7. Deploy `kube-prometheus-stack` + Loki via Rancher's monitoring/logging integration. (Rancher ships these as "apps" with sensible defaults.)
 
 **Do not commit yet if any of these are true:**
+
 - You have an audit/compliance constraint that mandates Red Hat-supported Kubernetes specifically.
 - The team's bandwidth to operate Harbor + Keycloak + monitoring stack as new components is genuinely thin and there's no existing org instance to plug into.
 - There's a stakeholder commitment to OKD already made that this would unwind.
@@ -305,12 +310,14 @@ If any of those apply, the calculus changes and OKD-A (SCOS workers, MCO-managed
 ## Sources
 
 **OKD platform**
+
 - [Fedora CoreOS — OKD 4 Architecture](https://docs.okd.io/latest/architecture/architecture-rhcos.html)
 - [Machine configuration overview — OKD 4](https://docs.okd.io/latest/machine_configuration/index.html)
 - [Node OS changes to SCOS — OKD upgrade notes](https://okd.io/docs/project/upgrade-notes/from-4-15/fcos-to-scos-migration/)
 - [OCP 4.16 release notes — RHEL compute deprecation](https://docs.openshift.com/container-platform/4.16/release_notes/ocp-4-16-release-notes.html)
 
 **RKE2 platform**
+
 - [RKE2 HA install guide](https://docs.rke2.io/install/ha)
 - [RKE2 CIS Hardening Guide](https://docs.rke2.io/security/hardening_guide)
 - [RKE2 backup and restore (etcd snapshots)](https://docs.rke2.io/datastore/backup_restore)
@@ -319,11 +326,13 @@ If any of those apply, the calculus changes and OKD-A (SCOS workers, MCO-managed
 - [Rancher: Backing up Rancher-launched clusters](https://ranchermanager.docs.rancher.com/how-to-guides/new-user-guides/backup-restore-and-disaster-recovery/back-up-rancher-launched-kubernetes-clusters)
 
 **NVIDIA on each**
+
 - [NVIDIA GPU Operator — Platform support](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/platform-support.html)
 - [NVIDIA GPU Operator — Getting started](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html)
 - [Install NVIDIA GPU Operator on RKE2 (community walkthrough)](https://thenewstack.io/install-a-nvidia-gpu-operator-on-rke2-kubernetes-cluster/)
 
 **Storage**
+
 - [Pure Storage and Rancher technical guide (PDF)](https://www.purestorage.com/content/dam/pdf/en/white-papers/wp-rancher-service-orchestrator.pdf)
 - [pure-csi Helm chart](https://github.com/purestorage/helm-charts/tree/master/pure-csi)
 - [DDN exa-csi-driver](https://github.com/DDNStorage/exa-csi-driver)
@@ -331,6 +340,7 @@ If any of those apply, the calculus changes and OKD-A (SCOS workers, MCO-managed
 - [Red Hat blog: HPC workloads on OpenShift with MPI and Lustre](https://www.redhat.com/en/blog/running-hpc-workloads-with-red-hat-openshift-using-mpi-and-lustre-filesystem)
 
 **Slinky and Slurm-on-Kubernetes**
+
 - [Slurm Workload Manager — Slinky overview](https://slurm.schedmd.com/slinky.html)
 - [SchedMD: Introducing the Slinky Project](https://www.schedmd.com/introducing-slinky-slurm-kubernetes/)
 - [Slinky slurm-operator on GitHub](https://github.com/SlinkyProject/slurm-operator)
@@ -338,6 +348,7 @@ If any of those apply, the calculus changes and OKD-A (SCOS workers, MCO-managed
 - [Running Slurm on Amazon EKS with Slinky (AWS blog)](https://aws.amazon.com/blogs/containers/running-slurm-on-amazon-eks-with-slinky/)
 
 **Comparative**
+
 - [Rancher vs OpenShift (OpenLogic)](https://www.openlogic.com/blog/rancher-vs-openshift)
 - [Rancher vs OpenShift (Pure Storage Blog)](https://blog.purestorage.com/purely-educational/rancher-vs-openshift/)
 - [Kubernetes deployment options for on-prem clusters (arXiv)](https://arxiv.org/html/2407.01620v1)

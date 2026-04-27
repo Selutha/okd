@@ -30,6 +30,7 @@ For your situation (HPC center, small ops team, GitLab CI already in place via a
 | **DAG-style workflows** | Argo Workflows | Add only if you do ML pipelines / batch DAGs on k8s |
 
 **What I'd skip:**
+
 - **Devtron.** Real reasons in §4 below.
 - **Self-hosting GitLab** to get security-scanning features. The scanning capability is achievable via the OSS-scanner-in-CI + SonarQube stack — see §10.
 
@@ -56,6 +57,7 @@ These are different jobs that get blended in marketing but are operationally dis
 ### 1.2 Push-based CD vs pull-based GitOps
 
 **Push-based (traditional CI/CD):**
+
 - Pipeline does `kubectl apply` or `helm upgrade` from CI runner against the cluster.
 - CI runner needs cluster credentials.
 - Cluster doesn't actively reconcile — it has whatever the last apply put on it.
@@ -63,6 +65,7 @@ These are different jobs that get blended in marketing but are operationally dis
 - Cons: drift not detected, audit trail is in CI logs not git, secrets management harder, multi-cluster gets messy.
 
 **Pull-based (GitOps):**
+
 - Cluster runs an agent (ArgoCD or Flux) that watches a git repo and reconciles.
 - CI's job ends with "commit new image tag to manifests repo." Cluster picks up from there.
 - Drift is auto-detected and (optionally) auto-corrected.
@@ -92,12 +95,14 @@ Both are CNCF-graduated, both run in production at scale, both pull from git. Th
 ### 2.2 When each fits
 
 **ArgoCD wins when:**
+
 - You want a UI for your ops team (we're a small HPC team, the UI is genuinely useful)
 - Multi-cluster from a single management plane (your design has 3+ clusters managed by one mgmt cluster)
 - SSO/Keycloak integration matters (it does — Keycloak is the IdP per `design-rke2.md`)
 - You want visibility into deploy state without learning yet another CLI
 
 **Flux wins when:**
+
 - Everything-as-code purist — no UI is a feature, not a bug
 - Lightweight footprint matters
 - Per-cluster autonomy is the operational model
@@ -106,6 +111,7 @@ Both are CNCF-graduated, both run in production at scale, both pull from git. Th
 ### 2.3 Decision
 
 **ArgoCD.** For your situation:
+
 - Multi-cluster hub-and-spoke is a perfect fit for the mgmt cluster pattern.
 - The UI is a genuine help for a small team operating 3 clusters.
 - Keycloak OIDC integration is well-documented and well-trodden.
@@ -156,6 +162,7 @@ This stack — Harbor's Trivy + Kyverno + Cosign — gives you the "block vulner
 ### 3.4 When to revisit Devtron
 
 If any of these change, reconsider:
+
 - You start onboarding many independent dev teams with self-service deploy needs (becomes multi-tenant).
 - You want to move off GitLab CI for some reason.
 - The integrated dashboard becomes more valuable than fewer-moving-parts.
@@ -203,6 +210,7 @@ For now: **skip.** Build the simpler stack first.
 ### 4.6 Kyverno — admission policy
 
 Already in your RDR-5 (recommended over Gatekeeper). Day-1 component for:
+
 - Enforcing image-signature verification (with Cosign)
 - Blocking vulnerable images from deploy (with Trivy results from Harbor)
 - General Pod Security Admission patterns
@@ -212,11 +220,13 @@ Already in your RDR-5 (recommended over Gatekeeper). Day-1 component for:
 ### 4.7 GitLab Agent for Kubernetes
 
 **What it is:** GitLab's first-party k8s integration. Provides:
+
 - Pull-based GitOps from GitLab repos
 - Kubernetes-aware GitLab CI deploy jobs without storing kubeconfig in CI vars
 - Cluster observability surfaced in GitLab UI
 
 **Worth knowing about, less attractive than ArgoCD because:**
+
 - GitLab-only — locked to GitLab if you ever want to switch source-control
 - Smaller community than ArgoCD
 - The "single GitOps tool for the fleet" benefit is bigger than "tighter GitLab integration"
@@ -229,7 +239,7 @@ Already in your RDR-5 (recommended over Gatekeeper). Day-1 component for:
 
 ### 5.1 Component diagram
 
-```
+```text
                            ┌─────────────────────────────────┐
                            │ GitLab (existing org instance)   │
                            │  - source repos                  │
@@ -312,6 +322,7 @@ Failure at any gate (Trivy critical vuln, Cosign signature missing, Kyverno poli
 ## 6. Phased adoption — what's day 1, what's later
 
 **Day 1 (with the cluster build-out):**
+
 - ArgoCD installed on mgmt cluster, OIDC via Keycloak
 - **GitLab Runners deployed on the infra cluster** (k8s executor)
 - GitLab CI configured to push images to Harbor + commit manifest changes
@@ -324,16 +335,19 @@ Failure at any gate (Trivy critical vuln, Cosign signature missing, Kyverno poli
 - Manifests repo structure agreed and templated
 
 **Day 30:**
+
 - Kyverno policies tightened (PSA, image origin, resource limits)
 - Argo Rollouts installed when first canary requirement surfaces
 - Backup of ArgoCD app definitions to S3 (in addition to git, belt + suspenders)
 
 **Day 90+:**
+
 - Kargo if multi-environment promotion becomes a real pattern
 - Argo Workflows if ML pipelines move to k8s (or skip entirely if Slinky/Slurm handles them)
 - Renovate (or similar) for keeping Helm chart values up to date automatically
 
 **Skip indefinitely** unless a real need surfaces:
+
 - Devtron (your platform doesn't need the wrapper)
 - Tekton / OpenShift Pipelines (you have GitLab CI)
 - GitLab Agent for Kubernetes (ArgoCD does the GitOps job better)
@@ -429,6 +443,7 @@ Running scanners in CI gives you JSON reports per pipeline run. That's useful bu
 **What it is:** Self-hosted SAST + code quality platform. Free under LGPL. Covers 35+ languages with built-in analyzers. Deployed via Helm chart with a Postgres backend.
 
 **What it gives you:**
+
 - Per-project dashboards: SAST findings, code coverage, code smells, duplication, technical debt.
 - Quality gates that fail CI builds when code quality drops below thresholds.
 - Trend tracking — vulnerabilities found vs. fixed over time, per branch.
@@ -438,6 +453,7 @@ Running scanners in CI gives you JSON reports per pipeline run. That's useful bu
 **Resource impact:** ~2 vCPU / 4 GiB RAM / 30 GiB PV. Fits easily on the infra cluster's agent capacity.
 
 **Architecture placement — infra cluster:**
+
 - Helm chart on the **infra RKE2 cluster** (alongside CI runners and other build-time infrastructure).
 - Postgres via **a CloudNativePG instance running on the infra cluster** (separate from the mgmt cluster's CNPG). Add a `sonarqube` database to it. Future DefectDojo can share the same CNPG instance with its own database.
 - Exposed via Kemp VIP for `sonarqube.<base>` → infra cluster's ingress-nginx → SonarQube service.
@@ -452,12 +468,14 @@ Running scanners in CI gives you JSON reports per pipeline run. That's useful bu
 **What it is:** Vulnerability *management* platform — aggregates findings from 200+ scanners (SonarQube, Trivy, Semgrep, gitleaks, Snyk, Burp, ZAP, and many more) into a unified triage workflow. From the search results: *"DefectDojo acts as a central hub for vulnerability management, allowing security teams to track, manage, and remediate vulnerabilities efficiently."*
 
 **What it adds beyond SonarQube:**
+
 - One pane of glass across **all** scanners (Harbor's Trivy + SonarQube SAST + Semgrep CI + gitleaks CI + any future scanner).
 - Triage workflow — mark false positive, accept risk, assign owner, track remediation deadline.
 - Deduplication — same vulnerability surfaced by two scanners shows up once.
 - Compliance reporting / risk dashboards.
 
 **When to add:**
+
 - If you have one scanner, SonarQube + Harbor's Trivy UI is enough.
 - If you have many scanners and want unified triage workflow, DefectDojo earns its keep.
 
@@ -554,7 +572,7 @@ This is the rule that says: *"Pods can only run images from `harbor.<base>` that
 
 Two CloudNativePG instances — one on mgmt for "valuables" (auth + image-registry metadata), one on infra for build/scan data:
 
-```
+```text
    ┌─────────────────────────────────────────┐
    │ Org GitLab (unchanged)                  │
    │  - source repos                         │
@@ -628,6 +646,7 @@ Two CloudNativePG instances — one on mgmt for "valuables" (auth + image-regist
 ```
 
 **Two CloudNativePG instances, by design:**
+
 - **Mgmt CNPG** — keycloak + harbor metadata. Auth and image-registry "valuables." Failure-domain isolated from build infrastructure.
 - **Infra CNPG** — sonarqube + defectdojo (when added). Build/scan data. Independent lifecycle from mgmt-tier services.
 - Both back up via barman to Pure FlashBlade S3 — same backup chain, different buckets. Restore is independent per cluster.
@@ -707,6 +726,7 @@ include:
 ### 10.8 Honest trade-offs
 
 **What this stack gives you that you don't have today:**
+
 - SAST on every commit
 - Secret detection on every commit
 - Dependency vulnerability scanning on every commit
@@ -716,6 +736,7 @@ include:
 - All running on your own infrastructure
 
 **What you don't get without GitLab Ultimate:**
+
 - MR-integrated security findings UI in GitLab itself (findings show up in SonarQube and as CI artifacts instead)
 - AI-assisted vulnerability triage (some teams find this overhyped; not critical for a small ops team)
 - "Vulnerabilities" tab in GitLab project navigation
@@ -723,7 +744,8 @@ include:
 For a small HPC team with a security-conscious mindset but a modest scanner volume, the SonarQube tab is a perfectly good substitute for GitLab's "Vulnerabilities" tab. The MR-integration loss is the real one — but it's manageable: CI fails on critical findings, devs see the CI failure, devs check the SonarQube dashboard or the CI artifact JSON.
 
 **Cost comparison:**
-- GitLab Ultimate: ~$99/user/month at the time of writing. For a 20-person team that's ~$24k/year. Per-org pricing varies.
+
+- GitLab Ultimate: list pricing has historically been around $99/user/month, but **GitLab pricing changes frequently — verify current pricing on [GitLab's pricing page](https://about.gitlab.com/pricing/) before treating any number as authoritative**. Enterprise contracts often differ from list. For ballpark planning only.
 - This stack: SonarQube CE is free; DefectDojo is free; OSS scanners are free; infrastructure cost is absorbed by the infra cluster's existing capacity — call it $0 incremental.
 
 For most HPC research environments, the stack is the better answer. If your org already pays for GitLab Ultimate (or might), revisit — Ultimate's polish is real, just not free.
@@ -741,27 +763,32 @@ For most HPC research environments, the stack is the better answer. If your org 
 ## 9. Sources
 
 **GitOps tools comparison:**
+
 - [ArgoCD docs](https://argo-cd.readthedocs.io/)
 - [FluxCD docs](https://fluxcd.io/)
 - [The GitOps Standard in 2026: ArgoCD vs FluxCD analysis (Mechcloud)](https://dev.to/mechcloud_academy/the-gitops-standard-in-2026-a-comparative-research-analysis-of-argocd-and-fluxcd-46d8)
 - [ArgoCD vs FluxCD Detailed Feature Comparison (OneUptime)](https://oneuptime.com/blog/post/2026-02-26-argocd-vs-fluxcd-comparison/view)
 
 **Devtron:**
+
 - [Devtron GitHub](https://github.com/devtron-labs/devtron)
 - [Devtron Trivy integration docs](https://docs.devtron.ai/docs/user-guide/integrations/vulnerability-scanning/trivy)
 
 **Promotion / progressive delivery:**
+
 - [Kargo project site](https://kargo.io/)
 - [Kargo Quickstart docs](https://docs.kargo.io/quickstart/)
 - [Argo Rollouts docs](https://argoproj.github.io/argo-rollouts/)
 
 **Image security:**
+
 - [Harbor vulnerability scanning docs (Trivy default)](https://goharbor.io/docs/2.0.0/administration/vulnerability-scanning/)
 - [Harbor Scanner Adapter for Trivy (GitHub)](https://github.com/aquasecurity/harbor-scanner-trivy)
 - [Cosign / Sigstore](https://docs.sigstore.dev/)
 - [Kyverno verify-images policies](https://kyverno.io/policies/?policytypes=Verify%2520Images)
 
 **Code-level security scanning:**
+
 - [Semgrep (semgrep.dev)](https://semgrep.dev/)
 - [Semgrep + GitLab integration](https://semgrep.dev/for/gitlab/)
 - [gitleaks on GitHub](https://github.com/gitleaks/gitleaks)
@@ -777,6 +804,7 @@ For most HPC research environments, the stack is the better answer. If your org 
 - [GitLab tier pricing](https://about.gitlab.com/pricing/)
 
 **SonarQube + DefectDojo:**
+
 - [SonarQube documentation](https://docs.sonarsource.com/sonarqube-server/latest/)
 - [SonarQube Community Build (free) details](https://www.sonarsource.com/products/sonarqube/downloads/)
 - [DefectDojo project (BSD 3-Clause)](https://github.com/DefectDojo/django-DefectDojo)
@@ -784,6 +812,7 @@ For most HPC research environments, the stack is the better answer. If your org 
 - [DefectDojo integrations index (200+ tools)](https://defectdojo.com/integrations)
 
 **Other tools:**
+
 - [Argo Workflows](https://argoproj.github.io/argo-workflows/)
 - [Tekton](https://tekton.dev/)
 - [GitLab Agent for Kubernetes](https://docs.gitlab.com/ee/user/clusters/agent/)

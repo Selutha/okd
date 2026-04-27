@@ -13,7 +13,7 @@
 Slinky is a project family from SchedMD (the company that develops Slurm) for integrating Slurm and Kubernetes.
 
 > "The Slinky Project is an open source suite of integration tools designed by SchedMD to bring Slurm capabilities into Kubernetes." — [SchedMD: Introducing the Slinky Project](https://www.schedmd.com/introducing-slinky-slurm-kubernetes/)
-
+>
 > "Slinky is a toolkit of projects to integrate Slurm into Kubernetes, released under the Apache-2.0 license." — same source.
 
 The project is hosted under the [SlinkyProject GitHub organization](https://github.com/slinkyproject) and documented at [slinky.schedmd.com](https://slinky.schedmd.com/).
@@ -41,6 +41,7 @@ Source: [SlinkyProject/slurm-operator on GitHub](https://github.com/SlinkyProjec
 **OS / container-runtime / Kubernetes-distribution support:** Not specified in the README.
 
 **Release cadence:**
+
 - v0.1.0 — November 2024
 - v0.2.0 — March 2025
 - v0.3.0 — June 2025
@@ -50,11 +51,11 @@ Source: [SlinkyProject/slurm-operator on GitHub](https://github.com/SlinkyProjec
 **What it manages**, per the [slurm-operator project page](https://slinky.schedmd.com/projects/slurm-operator):
 
 > "Control plane management: Kubernetes automatically restarts crashed controller pods, providing high availability without shared filesystems"
-
+>
 > "Worker node management (NodeSets): Handles scaling, upgrades, and node state tracking"
-
+>
 > "Login node management (LoginSets): Provides user-facing submit nodes with SSSD identity management"
-
+>
 > "Hybrid support: sometimes a Slurm cluster has some, but not all, of its components in Kubernetes" — the operator is "designed [to] support these use cases."
 
 ### 2.2 slurm-bridge
@@ -130,9 +131,9 @@ Reference research: [StackHPC — Stop Scientists Stealing Your Nodes: Evaluatin
 From [NVIDIA's developer blog: Running Large-Scale GPU Workloads on Kubernetes with Slurm](https://developer.nvidia.com/blog/running-large-scale-gpu-workloads-on-kubernetes-with-slurm/):
 
 > "Production deployments at NVIDIA have demonstrated that Slinky slurm-operator scales to over 8,000 GPUs."
-
+>
 > "GPU communication benchmarks (NCCL `all-reduce` and `all-gather`) match the performance of noncontainerized Slurm deployments, with no measurable impact from the Kubernetes layer."
-
+>
 > "The article emphasizes that Slinky uses Slurm 25.11 features including configless mode, dynamic nodes, and cgroups v2 for resource isolation."
 
 NVIDIA references **GB200 NVL72** as the GPU architecture and the **NVIDIA GPU Operator** as the integration path — same GPU Operator already planned for the user's B200/B300 cluster.
@@ -229,6 +230,7 @@ The user's NVIDIA GPU Operator deployment for L40 / B200 / B300 inference is ind
 ### 6.6 Privileges
 
 Slurm components (slurmd in particular) need elevated privileges:
+
 - Cgroup access for accounting/limits.
 - Optional hostPath mounts for shared filesystems / Slurm spool.
 - Optional privileged mode in some configurations.

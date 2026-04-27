@@ -38,6 +38,7 @@ These are the three foundational storage shapes. Most confusion in cluster desig
 **What it is:** raw disk presented over a protocol (iSCSI, NVMe-oF, FC, vSphere VMDK, AWS EBS). The host (or VM, or pod) sees it as a block device — `/dev/sdb`, `/dev/nvme0n1` — formats it with a filesystem (xfs, ext4), and mounts it. **Exclusive access** — only one host attaches a block volume at a time.
 
 **Characteristics:**
+
 - **Lowest-latency, highest-IOPS** option for transactional workloads
 - **Read-Write-Once (RWO)** in Kubernetes terms — one pod attaches, others can't access concurrently
 - Filesystem semantics (POSIX) — fopen, fseek, fsync, etc.
@@ -45,6 +46,7 @@ These are the three foundational storage shapes. Most confusion in cluster desig
 - The pod sees a block device; the **content is whatever filesystem you put on it**
 
 **Use cases:**
+
 - Database storage (Postgres, MySQL, etcd) — needs low fsync latency, exclusive access
 - VM disks (KubeVirt) — VMs expect block devices
 - Application caches that survive pod restarts
@@ -57,12 +59,14 @@ These are the three foundational storage shapes. Most confusion in cluster desig
 **What it is:** a shared filesystem accessed over a network protocol (NFS, CIFS/SMB, Lustre). Multiple hosts can mount the same filesystem concurrently. **Shared access**, with locking semantics for coordination.
 
 **Characteristics:**
+
 - **Read-Write-Many (RWX)** in Kubernetes terms — multiple pods can mount, read, write concurrently
 - POSIX file semantics — same mental model as block, but with shared visibility
 - Performance varies wildly by protocol: NFS is general-purpose, **Lustre is parallel-FS designed for HPC** (much higher throughput on parallel reads)
 - Locking can be tricky — applications need to handle "what if another writer modifies the file"
 
 **Use cases:**
+
 - Shared application data — multiple pods reading the same configuration or content
 - HPC scratch / training data (Lustre territory)
 - Image registries that serve via NFS (less common now; Harbor uses S3 instead)
@@ -77,6 +81,7 @@ These are the three foundational storage shapes. Most confusion in cluster desig
 **The S3 protocol (originally AWS, now an industry standard) is the dominant API.** Many vendors (Pure FlashBlade, MinIO, Ceph RadosGW) expose S3-compatible APIs.
 
 **Characteristics:**
+
 - **No POSIX semantics** — no directories (just key prefixes), no mtime guarantees, no atomic rename, no append
 - **Eventual consistency** historically (modern S3 is strong-consistency now)
 - **Effectively infinite scale** — billions of objects, petabytes
@@ -85,6 +90,7 @@ These are the three foundational storage shapes. Most confusion in cluster desig
 - Versioning, lifecycle policies (auto-tier to cold, auto-delete after N days), bucket-level encryption built-in
 
 **Use cases:**
+
 - Container image storage (Harbor, Quay, ECR all use S3 backends)
 - Backup destinations (Postgres barman, etcd snapshots, Velero)
 - Long-term log archive
@@ -163,6 +169,7 @@ into: 3 stateful Postgres pods with replication, WAL streaming to S3, automated 
 | **Percona Operator for PostgreSQL** | Percona (commercial) | Production-grade | Percona's distribution; backed by their consulting/support business |
 
 For your stack, **CloudNativePG is the right pick because:**
+
 - CNCF Sandbox project (vendor-neutral governance)
 - 132M+ downloads, mature
 - Native barman → S3 backup model fits your FlashBlade S3 perfectly
@@ -212,12 +219,14 @@ These are siblings, not rivals at the engine level. They share most of the codeb
 ### 3.1 Practical guidance
 
 **Pick MariaDB if:**
+
 - You're on RHEL/Rocky (Red Hat ships it as the default `mysql` package)
 - You want fully-open governance (no Oracle-controlled roadmap)
 - You need built-in Galera multi-master clustering
 - You're starting fresh with no existing MySQL investment
 
 **Pick MySQL if:**
+
 - You have existing MySQL workloads / MySQL DBA expertise
 - You need a specific MySQL Enterprise feature (Group Replication, MySQL Shell with AdminAPI)
 - Your stack already standardizes on MySQL
@@ -234,14 +243,14 @@ In-memory key/value stores. Used as caches, session stores, message queues (limi
 
 ### 4.1 The fork story
 
-**Redis** was the original — open-source, BSD-licensed, dominant in the cache space for over a decade. In **March 2024**, Redis Labs (the corporate sponsor) changed Redis 7.4+ from BSD to a dual SSPL/RSAL license, ending its OSS status by the OSI definition.
+**Redis** was the original — open-source, BSD-licensed, dominant in the cache space for over a decade. In **March 2024**, Redis Labs (the corporate sponsor) changed Redis 7.4+ from BSD-3-Clause to a dual RSALv2 / SSPLv1 license, ending its OSS status by the OSI definition. (Redis 7.2.x and earlier remain BSD-licensed; the change is not retroactive.)
 
 This triggered immediate forks:
 
-- **Valkey** — Linux Foundation-backed fork by AWS, Google, Oracle, Ericsson. **BSD-3-Clause licensed**, drop-in protocol-compatible. Now the de-facto OSS Redis successor. Default in Ubuntu 24.10+, packaged by Bitnami, etc.
+- **Valkey** — Linux Foundation-backed fork announced March 28, 2024, sponsored by AWS, Google Cloud, Oracle, Ericsson, and Snap. **BSD-3-Clause licensed**, drop-in protocol-compatible (forked from Redis 7.2.4). Now the de-facto OSS Redis successor.
 - **KeyDB** — older fork (pre-license-change), multi-threaded redesign of Redis. Different from Valkey but similar protocol compatibility. Now owned by Snap; less community momentum than Valkey.
 
-**Redis still exists** (and is fine to use under the new license for most purposes — SSPL is restrictive only if you're providing Redis-as-a-service to third parties), but for new deployments where license purity matters, Valkey is the cleaner choice.
+**Redis ecosystem update worth knowing:** Redis 8 (released later in 2025) added AGPLv3 as a third option, making Redis 8+ tri-licensed under RSALv2 / SSPLv1 / AGPLv3. AGPLv3 is OSI-approved, so Redis 8+ is technically OSS again under that license option — though most cloud-native shops have already standardized on Valkey. **For new deployments**, Valkey remains the cleaner choice (single license, no need to navigate the tri-license + the "but only if you choose AGPL" caveat).
 
 ### 4.2 What you actually use it for
 
@@ -312,7 +321,7 @@ Your design hasn't locked this down (G-7 in the OKD doc). Three patterns to know
 
 Self-hostable on Kubernetes via the [Vault Helm chart](https://github.com/hashicorp/vault-helm) (Raft-based HA storage backend). Or run on dedicated VMs.
 
-**License watch:** HashiCorp moved Vault to BUSL in 2023. The community forked it as **OpenBao** (Linux Foundation, MPL-2.0). Functionally equivalent; the Vault protocol is unchanged.
+**License watch:** HashiCorp moved Vault (and Terraform, Nomad, Consul) from MPL 2.0 to the Business Source License (BUSL/BSL v1.1) in **August 2023**. The community forked Vault as **OpenBao** (Linux Foundation, MPL-2.0). Functionally equivalent; the Vault protocol is unchanged. (Note: IBM completed its acquisition of HashiCorp in early 2025; future license direction is for IBM to determine.)
 
 ### 7.2 External Secrets Operator (ESO)
 
@@ -614,6 +623,7 @@ spec:
 ```
 
 That Application:
+
 1. Watches `clusters/mgmt/keycloak` in your manifests git.
 2. Finds the Helm chart there (or references one upstream — see §12.7 below).
 3. Renders the chart with the embedded values.
@@ -621,11 +631,13 @@ That Application:
 5. Auto-syncs on git changes; self-heals if someone runs `kubectl edit`; prunes orphaned resources.
 
 **Where Helm still lives:**
+
 - The chart itself (community charts or charts you author) — still Helm-format.
 - `values.yaml` — still Helm syntax, Helm template variables, Helm overrides.
 - Local testing: `helm template chart/`, `helm lint chart/`, `helm dependency update chart/`. Useful before committing.
 
 **Where ArgoCD takes over:**
+
 - Production install/upgrade/rollback (no `helm install` against prod).
 - Continuous reconciliation, drift detection.
 - Multi-cluster fan-out (one Application can target a downstream cluster via cluster credentials).
@@ -663,16 +675,18 @@ spec:
 ```
 
 **Pros:**
+
 - No copying — chart maintainer ships updates, you bump `targetRevision`.
 - Clean git — only your values overrides, no chart code.
 - Easy upgrades — change a version number.
 - Industry standard for community charts.
 
 **Cons:**
+
 - **External dependency at deploy time.** If `charts.bitnami.com` is down (it has been), your sync fails. If a chart is yanked or moved, you scramble.
 - **Supply chain risk.** A compromised upstream chart could compromise your cluster. Helm chart provenance signing helps, but not all chart repos sign.
 - **Doesn't work air-gapped** without a mirror.
-- **Chart lifecycle decisions are not yours** — Bitnami's deprecations, renames, license changes (Bitnami's own charts moved behind a paywall in 2025 for some images).
+- **Chart lifecycle decisions are not yours** — Bitnami's deprecations, renames, license changes. Concrete recent example: in **August 2025** (effective Aug 28, later delayed to Sep 29), Broadcom restructured the Bitnami catalog — most non-hardened community images moved to a `bitnamilegacy` archive (no further updates), only a limited "latest-tag hardened" set remains free. Helm chart source on GitHub stays Apache 2 but the prepackaged OCI charts at `docker.io/bitnamicharts` stop receiving updates. **For new deployments, treat Bitnami charts as "verify license + update cadence at install time" rather than "evergreen free."**
 
 #### Pattern B: Chart vendored into git
 
@@ -688,6 +702,7 @@ spec:
 ```
 
 **Pros:**
+
 - **No external dependency at deploy time.** Everything in your git, no flaky upstream connections.
 - **Reproducible builds.** Same git commit = same exact chart, forever.
 - **Supply chain control** — you can audit/scan the chart before committing.
@@ -696,6 +711,7 @@ spec:
 - **Visible diff** when you bump a chart version — you actually see what changed.
 
 **Cons:**
+
 - **Chart updates are manual.** Each upstream release means re-downloading and committing.
 - **Bigger git repo** — charts (especially with subcharts) can be MB-scale.
 - **Drift from upstream** if not maintained. People forget to bump.
@@ -714,6 +730,7 @@ spec:
 ```
 
 **Pros (best of both worlds):**
+
 - **No external dependency at deploy time** — Harbor is local.
 - **Can scan charts** before serving them (Trivy, Cosign verification).
 - **Air-gap friendly** if Harbor is the only path.
@@ -721,6 +738,7 @@ spec:
 - **Same registry as images** — one auth pattern, one signing pattern, one backup target.
 
 **Cons:**
+
 - **More moving parts.** You operate the mirror process.
 - **Manual or scripted "pull from upstream → push to Harbor"** workflow per chart version.
 
@@ -744,6 +762,7 @@ spec:
 For community charts you mirror, the same pattern works — pull from upstream, push to Harbor as OCI, reference Harbor everywhere.
 
 **Why this is the future:**
+
 - Harbor already exists in your stack; no separate chart-museum to operate.
 - Charts and images use the same Cosign signing keys, same supply-chain attestations, same Kyverno admission verification.
 - OCI is the durable artifact format — `oras` CLI handles arbitrary OCI artifacts (charts, SBOMs, attestations).
@@ -914,6 +933,7 @@ Your design follows this pattern correctly — CNPG (Postgres operator), GPU Ope
 ## Sources
 
 **Storage:**
+
 - [Kubernetes Persistent Volumes documentation](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
 - [AWS S3 API reference (de-facto standard)](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html)
 - [Pure Storage FlashBlade S3 docs](https://www.purestorage.com/products/unstructured-data-storage.html)
@@ -921,6 +941,7 @@ Your design follows this pattern correctly — CNPG (Postgres operator), GPU Ope
 - [Lustre architecture overview](https://www.lustre.org/about/)
 
 **PostgreSQL and operators:**
+
 - [PostgreSQL official site](https://www.postgresql.org/)
 - [CloudNativePG (CNPG) docs](https://cloudnative-pg.io/docs/)
 - [Zalando Postgres Operator](https://github.com/zalando/postgres-operator)
@@ -928,35 +949,41 @@ Your design follows this pattern correctly — CNPG (Postgres operator), GPU Ope
 - [StackGres](https://stackgres.io/)
 
 **MySQL/MariaDB:**
+
 - [MariaDB Foundation](https://mariadb.org/)
 - [MySQL community](https://www.mysql.com/)
 - [MariaDB Operator](https://github.com/mariadb-operator/mariadb-operator)
 - [Percona Operator for MySQL](https://docs.percona.com/percona-operator-for-mysql/)
 
 **Redis ecosystem:**
+
 - [Redis OSS license change announcement (2024)](https://redis.io/blog/redis-adopts-dual-source-available-licensing/)
 - [Valkey project](https://valkey.io/)
 - [KeyDB](https://docs.keydb.dev/)
 
 **Message brokers:**
+
 - [Apache Kafka](https://kafka.apache.org/)
 - [Strimzi Kafka Operator](https://strimzi.io/)
 - [RabbitMQ](https://www.rabbitmq.com/)
 - [NATS](https://nats.io/)
 
 **Secrets management:**
+
 - [HashiCorp Vault docs](https://developer.hashicorp.com/vault/docs)
 - [OpenBao (Vault fork)](https://openbao.org/)
 - [External Secrets Operator](https://external-secrets.io/)
 - [Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets)
 
 **Specialized databases:**
+
 - [MongoDB (note: SSPL)](https://www.mongodb.com/)
 - [FerretDB (Mongo-on-Postgres fork)](https://www.ferretdb.io/)
 - [ClickHouse](https://clickhouse.com/)
 - [TimescaleDB](https://www.timescale.com/)
 
 **Observability backends:**
+
 - [Prometheus](https://prometheus.io/)
 - [Grafana Loki](https://grafana.com/oss/loki/)
 - [Grafana Tempo](https://grafana.com/oss/tempo/)
@@ -966,6 +993,7 @@ Your design follows this pattern correctly — CNPG (Postgres operator), GPU Ope
 - [OpenTelemetry](https://opentelemetry.io/)
 
 **Common-pitfalls helpers:**
+
 - [ExternalDNS](https://github.com/kubernetes-sigs/external-dns)
 - [cert-manager](https://cert-manager.io/)
 - [Velero (k8s backup)](https://velero.io/)

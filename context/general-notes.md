@@ -26,7 +26,7 @@
 
 ## 1. The container stack — who talks to whom
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │ kubelet                                         │  ← Kubernetes
 └────────────────────┬────────────────────────────┘
@@ -115,6 +115,7 @@
 | DDN Lustre (HPC parallel FS) | `ddn-exa-csi-driver` (DDNStorage/exa-csi-driver) | Training data, model artifacts, scratch on the GPU cluster |
 
 **RKE2 vs OKD path differences:**
+
 - On RKE2: kernel modules for storage clients (Lustre) installed via Puppet `dnf install ddn-lustre-client`. CSI driver is a Helm install on the cluster.
 - On OKD: kernel modules built via Kernel Module Management (KMM) operator in `openshift-kmm` namespace; CSI driver via OperatorHub.
 
@@ -141,6 +142,7 @@ Real shift in the Red Hat-aligned ecosystem. Podman, RHEL container tooling, and
 ### Why runc still wins for most situations
 
 The advertised crun benefits — faster start, smaller memory footprint — show up most for:
+
 - High-churn workloads (CI/CD runners, FaaS, batch jobs)
 - Memory-dense nodes (1000+ containers per node)
 - Cold-start-sensitive paths
@@ -176,12 +178,14 @@ For long-running services (inference, platform tier), the difference is invisibl
 **Recurring operational cost:** RKE2 binary upgrades may rewrite the containerd config; you'd need to re-validate the override after each RKE2 upgrade. This is the real ongoing burden.
 
 **Compatibility caveats:**
+
 - NVIDIA Container Toolkit registers as an OCI prestart hook; crun supports OCI hooks the same way runc does, but it's less commonly tested in the wild.
 - Off the well-trodden RKE2 community path; troubleshooting may take longer.
 
 ### kata-runtime and gVisor — when they matter
 
 Both add **stronger isolation** at performance cost. Use cases:
+
 - Multi-tenant clusters running untrusted workloads.
 - Compliance environments requiring VM-level isolation per container.
 

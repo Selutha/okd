@@ -32,17 +32,20 @@ Each of those is real. Each has a counterweight in the RHEL 9 / Slurm / mixed-GP
 > "First, the cluster operators are updated; next, the nodes running the control plane and worker nodes have their operating system and configuration changed. Worker nodes are upgraded after the Control Plane has finished upgrading and do not block the cluster's upgrade process." ([OpenShift docs](https://docs.openshift.com/en/container-platform/4.10/architecture/control-plane))
 
 **Why it matters for this user:**
+
 - One command (`oc adm upgrade`) drives the whole stack — kubelet + CRI-O + OS + operators rev together with strong version coupling.
 - Reduces the "did I forget to update the CSI driver after kubelet?" class of incident.
 - For a small HPC team, this lowers cognitive load on routine upgrades.
 
 **The counterweight in the RKE2 path:**
+
 - Rancher (when it provisions RKE2 directly) orchestrates the rolling drain + binary swap + restart per node automatically. It's not as opinionated as CVO — kubelet is the only thing CVO upgrades atomically; the GPU Operator, ingress, monitoring, etc. are still per-component upgrades on RKE2.
 - However: each of those components has a Helm chart with a known version-pinning model, and tools like ArgoCD/Flux make the multi-component rev a tracked GitOps operation. That's not "one button," but it's not chaos either.
 
 **Net:** CVO is a real ergonomic win for OKD. It's the strongest single argument, and it's most valuable if your team's bandwidth for upgrade choreography is thin. **Worth ~Medium-High weight** in the decision.
 
 **Sources:**
+
 - [OpenShift cluster-version-operator on GitHub](https://github.com/openshift/cluster-version-operator)
 - [The Ultimate Guide to OpenShift Update for Cluster Administrators](https://www.redhat.com/en/blog/the-ultimate-guide-to-openshift-update-for-cluster-administrators)
 - [OpenShift Control Plane Architecture](https://docs.openshift.com/en/container-platform/4.10/architecture/control-plane)
@@ -56,11 +59,13 @@ Each of those is real. Each has a counterweight in the RHEL 9 / Slurm / mixed-GP
 > "The Embedded OperatorHub is a registry of certified Operators from software vendors and open source projects, where you can browse and install a library of Operators that have been verified to work with Red Hat OpenShift and that have been packaged for easy lifecycle management." ([Red Hat OperatorHub catalog](https://catalog.redhat.com/en/software/containers/openshift4/ose-operator-marketplace/5cddce4dbed8bd5717d6789d))
 
 **Why it matters for this user:**
+
 - Single discovery surface for vendor operators (DDN exa-csi-driver, NVIDIA GPU Operator, NFD, Red Hat Service Mesh, etc.).
 - OLM gives lifecycle management (channel-based subscriptions, automatic minor-version updates, failed-upgrade rollback) that Helm doesn't natively provide.
 - Certified Operator catalog has been quality-gated by Red Hat — a useful proxy for "this works on the platform."
 
 **The counterweight in the RKE2 path:**
+
 - Rancher's app catalog (via the Rancher Helm chart catalogs and the Apps marketplace) covers the major operators and Helm charts but is not as deep on certified third-party vendor operators.
 - OLM can be installed on RKE2 (it's an upstream Kubernetes project, not OpenShift-only), but it's not the default and not as well-integrated.
 - Most operators in the certified catalog also publish Helm charts that work on RKE2 — you trade convenience and cohesion for vendor-package-flexibility.
@@ -68,6 +73,7 @@ Each of those is real. Each has a counterweight in the RHEL 9 / Slurm / mixed-GP
 **Net:** OperatorHub is a real day-2 ergonomics win for shops that want to install many operators and don't want to chase Helm charts and CRD compatibility. For the HPC + AI inference workload, the operator universe in active use is small (NFD, GPU Operator, Pure CSI, DDN CSI, ingress, monitoring, cert-manager) — OperatorHub adds modest value in a small-operator-count environment. **Worth ~Medium weight.**
 
 **Sources:**
+
 - [OpenShift OperatorHub — Red Hat Ecosystem Catalog](https://catalog.redhat.com/en/software/containers/openshift4/ose-operator-marketplace/5cddce4dbed8bd5717d6789d)
 - [What are Red Hat OpenShift Operators?](https://www.redhat.com/en/technologies/cloud-computing/openshift/what-are-openshift-operators)
 - [Operator Hub Catalogs — OKD](https://okd.io/docs/operators/)
@@ -80,17 +86,20 @@ Each of those is real. Each has a counterweight in the RHEL 9 / Slurm / mixed-GP
 **What it is:** OpenShift/OKD predates Kubernetes Pod Security Admission (PSA) and ships its own model: SCCs. Every pod is admitted only if the requesting service account is granted an SCC that permits the pod's security context. The default SCCs (`restricted-v2`, `nonroot-v2`, `anyuid`, `privileged`) provide a baseline that's strictly more restrictive than Kubernetes' default.
 
 **Why it matters for this user:**
+
 - New workloads must be granted SCCs explicitly — this catches "developer pasted a Helm chart that wants to run as root" before it lands.
 - HPC workloads that need elevated privileges (e.g., Slinky's slurmd containers, GPU driver containers) require explicit SCC grants — visible in the cluster's RBAC audit, not implicit.
 - "Secure by default" is a real posture, not a config you have to remember to enable.
 
 **The counterweight in the RKE2 path:**
+
 - RKE2 enables CIS profile (`profile: cis` in config.yaml) and Pod Security Admission, plus SELinux on RHEL hosts. Adding Kyverno or Gatekeeper gives policy that's at least as expressive as SCCs.
 - But: that's configuration *you* author. With OKD, the equivalent posture exists day 1. The cost is real if the team is small.
 
 **Net:** Real advantage for OKD if security posture and out-of-box secure defaults are a priority. **However, the same posture is achievable on RKE2 with a few hours of config + one Helm chart (Kyverno or Gatekeeper).** Whether it's worth Medium or Low weight depends on team experience with k8s security models. For an HPC center where Slurm provides scheduling and the k8s cluster is hosting service workloads (not multi-tenant developer self-service), the marginal value is **Medium-Low**.
 
 **Sources:**
+
 - [OKD docs — Managing security context constraints](https://docs.okd.io/latest/authentication/managing-security-context-constraints.html)
 
 ---
@@ -100,16 +109,19 @@ Each of those is real. Each has a counterweight in the RHEL 9 / Slurm / mixed-GP
 **What it is:** Red Hat publishes operators for several adjacent platforms — OpenShift Pipelines (Tekton), OpenShift Service Mesh (Istio), OpenShift GitOps (ArgoCD), OpenShift Logging — as OperatorHub-installable operators. They install with sane defaults that integrate with OpenShift's auth, monitoring, and Routes.
 
 **Why it matters for this user:**
+
 - If the inference service workload eventually wants Tekton-based CI/CD or Argo-based GitOps, OpenShift's versions install with one click and integrate with cluster auth.
 - Service Mesh integration is well-trodden territory on OpenShift.
 
 **The counterweight in the RKE2 path:**
+
 - Tekton, Argo, Istio, Loki, and friends are all upstream projects with their own Helm charts. They run on RKE2 without modification — you just install them yourself.
 - The "integration with cluster auth" benefit is real on OKD (auto-wired to OAuth) but evaporates if you've deployed Keycloak as the OIDC provider for both clusters anyway (which you'd do on either platform per G-4 of the main design doc).
 
 **Net:** Modest. The integration is real but benefits accrue only if you adopt those specific tools and want the OpenShift-flavored configs. For inference workloads specifically, this is **Low weight** unless the team has existing OpenShift Pipelines / Service Mesh skills.
 
 **Sources:**
+
 - [OpenShift Pipelines (Tekton) docs](https://docs.openshift.com/pipelines/latest/about/about-pipelines.html)
 - [OpenShift GitOps docs](https://docs.openshift.com/gitops/latest/understanding_openshift_gitops/about-redhat-openshift-gitops.html)
 
@@ -135,9 +147,10 @@ This is the kernel-module-version compatibility problem solved by design. For a 
 
 **The counterweight on RKE2:**
 The GPU Operator on RKE2 also supports kernel-module compatibility — it uses the [precompiled-kernel-modules approach or the standard driver-container build pattern](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/precompiled-kernel-modules.html). The driver container detects the running kernel and pulls a matching driver image (or builds one). This works. **However:**
+
 - There's no "DTK equivalent" pinned to specific RHEL kernel versions — you rely on NVIDIA's published precompiled images covering your kernel, or fall back to runtime compilation.
 - Cluster-OS upgrades on RKE2 are RHEL kernel updates managed by Puppet/dnf — coordinating those with GPU driver compatibility is an operations task you own. The GPU Operator helps but doesn't have an OpenShift-style "switch DaemonSet automatically when the kernel changes" behavior.
-- For mixed driver branches (L40 on R535, B200 on R570, B300 on R580+), this gets multi-dimensional on RKE2 — per-node-pool driver branch *and* per-kernel compatibility *and* per-Puppet-managed-kernel-update window. Doable; more bookkeeping.
+- For mixed driver branches (L40 on R535, B200 on R570+, B300 on whatever production branch is current when B300 ships), this gets multi-dimensional on RKE2 — per-node-pool driver branch *and* per-kernel compatibility *and* per-Puppet-managed-kernel-update window. Doable; more bookkeeping.
 
 **Smaller per-upgrade blast radius — bonus:**
 Separate from DTK: the toolkit DaemonSet on OKD writes a CRI-O drop-in (`/etc/crio/conf.d/99-nvidia.toml`) and reloads CRI-O. Kubelet on OKD is a separate systemd unit; CRI-O reload doesn't bounce kubelet. On RKE2, the toolkit SIGHUPs containerd, which RKE2 supervises, which restarts RKE2 (and kubelet) on the node. So a routine GPU Operator chart bump is a smaller event on OKD than on RKE2 — non-GPU pods on the node are completely undisturbed; GPU containers may briefly disrupt during runtime reload. See `design.md` §6.5 vs `design-rke2.md` §6.3 for the full breakdown.
@@ -145,6 +158,7 @@ Separate from DTK: the toolkit DaemonSet on OKD writes a CRI-O drop-in (`/etc/cr
 **Net:** This is a **Medium-to-High weight** advantage *if* you anticipate kernel revisions during the cluster's operating life (you will — RHCOS gets routine kernel updates) and *if* mixed-driver-branch GPU pools are part of the long-term plan (you've stated they are). For a single-driver-branch homogeneous GPU fleet that never upgrades the kernel, the value drops sharply — but that's not your fleet.
 
 **Sources:**
+
 - [Entitlement-Free Deployment of the NVIDIA GPU Operator on OpenShift (Red Hat blog)](https://www.redhat.com/en/blog/entitlement-free-deployment-of-the-nvidia-gpu-operator-on-openshift)
 - [DeepWiki — NVIDIA GPU Operator OpenShift Integration](https://deepwiki.com/NVIDIA/gpu-operator/10-openshift-integration)
 - [NVIDIA GPU Operator on OpenShift — install docs](https://docs.nvidia.com/datacenter/cloud-native/openshift/latest/index.html)
@@ -171,6 +185,7 @@ OpenShift AI is built on OpenShift's specific operators (OpenShift Routes, OAuth
 **Implication:** If the inference workload would benefit from OpenShift AI, the path is *paid OCP*, not OKD. OKD-vs-RKE2 is a wash for AI/ML platform features. The user's stated direction is OKD (community), so this advantage is off the table either way.
 
 **Sources:**
+
 - [Red Hat OpenShift AI overview](https://www.redhat.com/en/products/ai/openshift-ai)
 - [Installing OpenShift AI Self-Managed (Red Hat docs)](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/)
 
@@ -211,6 +226,7 @@ But: **the user has Pure FlashArray + FlashBlade and DDN Lustre.** ODF would be 
 ODF is a real OpenShift feature. It's not a real *advantage* in this stack.
 
 **Sources:**
+
 - [Deploying ODF on bare metal infrastructure (Red Hat docs)](https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.17/html-single/deploying_openshift_data_foundation_using_bare_metal_infrastructure/index)
 - [ODF architecture](https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.12/html/planning_your_deployment/odf-architecture_rhodf)
 
@@ -247,7 +263,7 @@ This isn't unique to HPC, but it lands harder for an HPC center because Slinky i
 
 L40 / B200 / B300 GPU support via the NVIDIA GPU Operator works on both platforms. NVIDIA's docs and the GPU Operator catalog include both targets, and basic GPU exposure (NFD labels, device plugin, DCGM, driver containerization) is comparable on each.
 
-**The OKD-specific edge** is the Driver Toolkit + per-RHCOS-version DaemonSet model — see §1.5. For a multi-driver-branch fleet (L40 R535, B200 R570+, B300 R580+) that will see kernel revisions during its operating life, this materially reduces the kernel/driver coordination burden. On RKE2, the GPU Operator's [precompiled-kernel-modules](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/precompiled-kernel-modules.html) feature handles the same problem in a different idiom — coverage is good but you sometimes hit the runtime-build fallback path when a kernel image isn't precompiled.
+**The OKD-specific edge** is the Driver Toolkit + per-RHCOS-version DaemonSet model — see §1.5. For a multi-driver-branch fleet (L40 R535, B200 R570+, B300 whatever-the-current-branch-is-when-it-ships) that will see kernel revisions during its operating life, this materially reduces the kernel/driver coordination burden. On RKE2, the GPU Operator's [precompiled-kernel-modules](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/precompiled-kernel-modules.html) feature handles the same problem in a different idiom — coverage is good but you sometimes hit the runtime-build fallback path when a kernel image isn't precompiled.
 
 Plus the smaller-blast-radius point on routine GPU Operator upgrades (kubelet stays up on OKD because CRI-O is a separate systemd unit; on RKE2 a containerd SIGHUP cascades into RKE2 restart). See `design.md` §6.5 vs `design-rke2.md` §6.3.
 
@@ -297,6 +313,7 @@ For this user's specific situation, the OKD case now rests on three real advanta
 - **OpenShift-family operator integration** (Low) — Pipelines / GitOps / Service Mesh fit if you adopt them.
 
 The RKE2 case rests on:
+
 - **Puppet-everywhere fit** for an existing Puppet/Katello shop (High).
 - **Rancher full lifecycle** for the workload clusters — provisioning, upgrade, etcd snapshot/restore (Medium-High).
 - **Less Slinky friction** if Slinky is in the future (Medium, conditional).
@@ -323,11 +340,13 @@ For an HPC center keeping Slurm as primary, the RKE2 case is *still* materially 
 ## Sources
 
 **OKD upgrade model and CVO:**
+
 - [OpenShift cluster-version-operator on GitHub](https://github.com/openshift/cluster-version-operator)
 - [The Ultimate Guide to OpenShift Update for Cluster Administrators](https://www.redhat.com/en/blog/the-ultimate-guide-to-openshift-update-for-cluster-administrators)
 - [OpenShift Control Plane Architecture](https://docs.openshift.com/en/container-platform/4.10/architecture/control-plane)
 
 **OperatorHub:**
+
 - [OpenShift OperatorHub — Red Hat Ecosystem Catalog](https://catalog.redhat.com/en/software/containers/openshift4/ose-operator-marketplace/5cddce4dbed8bd5717d6789d)
 - [What are Red Hat OpenShift Operators?](https://www.redhat.com/en/technologies/cloud-computing/openshift/what-are-openshift-operators)
 - [Operator Hub Catalogs — OKD](https://okd.io/docs/operators/)
@@ -335,28 +354,34 @@ For an HPC center keeping Slurm as primary, the RKE2 case is *still* materially 
 - [redhat-openshift-ecosystem/community-operators-prod](https://github.com/redhat-openshift-ecosystem/community-operators-prod)
 
 **OpenShift AI / RHODS (NOT on OKD):**
+
 - [Red Hat OpenShift AI overview](https://www.redhat.com/en/products/ai/openshift-ai)
 - [OpenShift AI Self-Managed installation docs](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/)
 - [From raw data to model serving with OpenShift AI](https://developers.redhat.com/articles/2025/07/29/raw-data-model-serving-openshift-ai)
 
 **OKD vs OCP positioning:**
+
 - [Red Hat OpenShift vs. OKD](https://www.redhat.com/en/topics/containers/red-hat-openshift-okd)
 - [okd-project/okd on GitHub](https://github.com/okd-project/okd)
 
 **OS / SCOS migration:**
+
 - [Node OS changes to SCOS](https://okd.io/docs/project/upgrade-notes/from-4-15/fcos-to-scos-migration/)
 - [Fedora CoreOS — OKD 4 Architecture](https://docs.okd.io/latest/architecture/architecture-rhcos.html)
 
 **OpenShift Data Foundation:**
+
 - [Deploying ODF on bare metal](https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.17/html-single/deploying_openshift_data_foundation_using_bare_metal_infrastructure/index)
 - [ODF architecture overview](https://docs.redhat.com/en/documentation/red_hat_openshift_data_foundation/4.12/html/planning_your_deployment/odf-architecture_rhodf)
 
 **Adjacent OpenShift operators:**
+
 - [OpenShift Pipelines (Tekton)](https://docs.openshift.com/pipelines/)
 - [OpenShift GitOps](https://docs.openshift.com/gitops/)
 - [OpenShift Service Mesh](https://docs.openshift.com/container-platform/latest/service_mesh/v2x/ossm-about.html)
 
 **RKE2 counterweights:**
+
 - [RKE2 Hardening / CIS](https://docs.rke2.io/security/hardening_guide)
 - [RKE2 etcd backup default](https://docs.rke2.io/datastore/backup_restore)
 - [Rancher Apps and Marketplace](https://ranchermanager.docs.rancher.com/how-to-guides/new-user-guides/kubernetes-cluster-setup/apps-and-marketplace)

@@ -19,7 +19,7 @@
 
 ### 1.1 Layering
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Layer 0 — Provisioning & Lifecycle                                      │
 │  Foreman + Katello + Puppet (existing, unchanged)                        │
@@ -163,6 +163,7 @@ Server count is per-cluster — see §3.1.1 for the redundancy math and the curr
 **Why the asymmetry is right:** the 5-node bump for mgmt is *targeted* — it's paid for by the recovery-cost asymmetry between the platform tier (state-bearing, hard to restore) and the workload tier (stateless from the cluster's perspective; rebuild path well-trodden via ArgoCD). Five-everywhere is uniform-but-wasteful; three-everywhere is uniform-but-fragile-on-mgmt; **5/3/3 is asymmetric-but-correct.**
 
 **Triggers to revisit and bump GPU to 5:**
+
 - Inference SLA tightens (customer-facing, time-bound, revenue-bearing).
 - GPU mirror is not in place or is DR-only (so no failover capacity during primary outage).
 - A specific incident or near-miss demonstrates the 1-failure-tolerance gap is real.
@@ -233,6 +234,7 @@ Per the [RKE2 Networking docs](https://docs.rke2.io/networking/basic_network_opt
 > "Identity-based security removes reliance on brittle IP addresses ... L7-aware policies enabling granular filtering like 'Allow only GET requests to /public/.*'."
 
 What Cilium gives you that Canal does not:
+
 - **kube-proxy replacement** in eBPF — service load balancing is O(1) map lookups in the kernel, not O(n) iptables rule scans. Scales materially better as service count grows (matters for inference fleets with many model-serving services).
 - **Identity-based NetworkPolicy** — policies attach to pod labels/identity rather than IP addresses. IP churn during pod restarts doesn't break policy.
 - **L7-aware policy** — enforce HTTP method/path, gRPC service/method, Kafka topic, DNS without a service mesh.
@@ -261,6 +263,7 @@ Architecture: Hubble server runs in the Cilium agent on each node (gRPC API). Hu
 #### Costs of the Cilium-on-both decision
 
 To be honest about the trade-offs:
+
 - **Steeper learning curve than Canal.** Troubleshooting eBPF takes different mental models than iptables. `cilium monitor` and Hubble flows replace `iptables -L -n`. Plan for a couple weeks of team ramp.
 - **More moving parts.** Cilium agent + Hubble server + Hubble Relay (+ optional UI) on every cluster.
 - **Kernel version sensitivity.** Cilium feature availability tracks kernel version. RHEL 9 is fine; pay attention if you ever pin to an older kernel for some compatibility reason.
@@ -405,6 +408,7 @@ Same VLANs:
 **Critical Connection Manager network constraint** (per Connection Manager Ingress Controller documentation, Chapter 7): the **Connection Manager must have an interface on the same broadcast domain as each cluster's node VLAN.** This is because CM uses node IPs as next-hop gateways for pod traffic; standard IP routing requires gateways to be directly connected.
 
 In practice this means the Kemp HA pair needs interfaces (or VLAN-tagged subinterfaces on a trunk) on each of:
+
 - `mgmt` (for L4 access to mgmt RKE2 servers' kube-apiserver, plus L7 for `rancher.<base>`, `harbor.<base>`, etc.)
 - `rke2-infra-node` (for L4 access to infra cluster servers' kube-apiserver + RKE2 registration, plus L7 for `*.apps.rke2-infra.<base>`, plus pod-CIDR routes via infra agent IPs)
 - `rke2-gpu-node` (same shape — L4 + L7 + pod-CIDR routes via GPU agent IPs)
@@ -512,7 +516,7 @@ Cilium has two main modes that change this picture significantly:
 |---|---|
 | **Encapsulation (VXLAN/Geneve, default)** | Pods are not directly routable from outside the cluster — they live on an overlay. CM cannot reach pod IPs by adding static routes pointing at node IPs (the pod IPs are inside the overlay). **This breaks the CM-as-ingress model.** Either switch Cilium to native-routing mode, or fall back to Service Mode targeting NodePort. |
 | **Native routing** (`tunnel: disabled`, `routingMode: native`) | Pod CIDRs are advertised as standard L3 routes. CM static routes work as expected. Pods are first-class on the node L3 network. **This is the mode you want.** Requires the underlying network to handle pod CIDRs (works fine on flat L3 networks like yours). |
-| **Native routing + BGP** (`bgpControlPlane: enabled`) | Cilium advertises pod CIDRs to your network fabric via BGP. The CM learns routes dynamically; no static-route maintenance. Cleanest answer if your network team is comfortable with BGP. | 
+| **Native routing + BGP** (`bgpControlPlane: enabled`) | Cilium advertises pod CIDRs to your network fabric via BGP. The CM learns routes dynamically; no static-route maintenance. Cleanest answer if your network team is comfortable with BGP. |
 
 **Recommended Cilium config for Kemp Ingress Controller compatibility:**
 
@@ -527,6 +531,7 @@ autoDirectNodeRoutes: true  # auto-install routes between nodes
 ```
 
 **Verification step in the install spike:**
+
 1. Deploy a test pod, note its IP.
 2. From the CM, run a ping to the pod IP (CM has a network diagnostic tool in the UI).
 3. If ping fails: the route is wrong, the Cilium mode doesn't allow direct routing, or the L2 adjacency requirement isn't met.
@@ -551,7 +556,8 @@ L40 (Ada / compute 8.9), B200 (Blackwell / compute 10.x), B300 (Blackwell refres
 - **Multiple ClusterPolicy resources** keyed off NFD labels — one per GPU architecture.
 - **Per-node-pool driver branch:**
   - L40 nodes → driver R535 (or whatever current LTS branch supports Ada).
-  - B200 + B300 nodes → driver R580+ (latest production branch supporting Blackwell/Blackwell-refresh).
+  - B200 nodes → driver R570+ ([NVIDIA GPU Operator docs confirm 570.133.20+ for HGX B200](https://docs.rke2.io/add-ons/gpu_operators)).
+  - B300 nodes → driver branch TBD when B300 ships at scale; verify against NVIDIA's compatibility matrix at deploy time. (Reasonable expectation: the production branch active at that time, likely R580+, but treat as unconfirmed until B300 hardware is in hand.)
 - **Taints + tolerations** so workloads land on the right architecture: `nvidia.com/gpu.product=L40-PCIe`, `nvidia.com/gpu.product=B200-SXM6`, etc.
 
 ### 6.3 RKE2-specific install and upgrade caveats
@@ -571,6 +577,7 @@ The NVIDIA upgrade docs note that "most of the GPU Operator managed daemonsets c
 **The toolkit-DaemonSet behavior is currently non-idempotent on upgrades.** There is an active community concern about this — multiple open NVIDIA/gpu-operator issues request that the toolkit skip the SIGHUP when containerd config is already correct ([#594](https://github.com/NVIDIA/gpu-operator/issues/594), [#991](https://github.com/NVIDIA/gpu-operator/issues/991), [#1651](https://github.com/NVIDIA/gpu-operator/issues/1651), [#992 RKE2-specific](https://github.com/NVIDIA/gpu-operator/issues/992)). Until/unless that's fixed, plan upgrades that bump the toolkit image as restart-affecting.
 
 **Other RKE2-specific install considerations:**
+
 - Recent GPU Operator (v25.10+) uses **CDI (Container Device Interface)** which is cleaner config than the older nvidia-container-toolkit hooks. Pin to v25.10+ when installing.
 - Configure with `CONTAINERD_SOCKET=/run/k3s/containerd/containerd.sock` and **do not** set `CONTAINERD_CONFIG` — per [NVIDIA/gpu-operator#992](https://github.com/NVIDIA/gpu-operator/issues/992), setting `CONTAINERD_CONFIG` can break RKE2 after reboot. RKE2 detects the nvidia runtime independently once present.
 - RKE2's `containerd` config uses templates at `/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl` — leave management of that file to RKE2 unless you have a specific reason to override.
@@ -580,6 +587,7 @@ The NVIDIA upgrade docs note that "most of the GPU Operator managed daemonsets c
 **Practical implication:** during a toolkit-image upgrade, agents restart node-by-node, but the API VIP, kube-apiserver, and etcd quorum stay healthy throughout. The cluster never goes "down" — only individual agent nodes briefly leave and return.
 
 **Operational pattern for production upgrades:**
+
 1. Pin the GPU Operator chart version. Don't auto-upgrade.
 2. For driver-only changes (CVE patches, new GPU support that doesn't need a new toolkit), use the driver upgrade controller — online, drains GPU pods only via `gpuPodDeletion`.
 3. For chart bumps that include a new toolkit image, schedule a rolling drain. Rancher's upgrade orchestration handles this with:
@@ -607,7 +615,7 @@ This is the one place where "Puppet manages everything on workers" gets a carve-
 
 ### 6.5 Power & cooling
 
-B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack PDUs and cooling can sustain steady-state inference loads, not just the rated TDP burst.
+B200 SXM hosts pull ~1000W per GPU per NVIDIA's HGX B200 specifications. B300 power draw is in the same class or higher per pre-release information; **confirm against NVIDIA's published TDP for whatever B300 SKU you actually order — don't rely on this doc for sizing**. Rack PDUs and cooling must sustain steady-state inference loads, not just the rated TDP burst.
 
 ---
 
@@ -665,6 +673,7 @@ B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack
 ## 9. Deployment Sequencing
 
 **Phase 0 — Prerequisites**
+
 1. VMware capacity: **12 VMs minimum** (5 mgmt + 3 per workload cluster + 1 bastion).
 2. Bare-metal hardware racked, BMC accessible from Foreman.
 3. VLANs + L3 + firewall rules.
@@ -675,6 +684,7 @@ B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack
 8. DDN Lustre: identify filesystems; obtain DDN Lustre client RPM repo and stage in Katello content view.
 
 **Phase 1 — Management plane (consolidated platform tier on 5-node mgmt cluster)**
+
 1. Foreman: confirm RHEL kickstart pipeline, Katello channels for RKE2 + DDN.
 2. Configure Kemp VIP for `rancher.<base>` (terminate at ingress-nginx in mgmt cluster).
 3. Build 5 RHEL VMs for the mgmt RKE2 cluster (8 vCPU / 32 GiB / 200 GiB SSD each); Puppet applies base + RKE2 server install with `cni: cilium`, `disable-kube-proxy: true`, `profile: cis`.
@@ -688,6 +698,7 @@ B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack
 11. Smoke test: Rancher login via Keycloak/AD, Harbor login via Keycloak, push/pull a test image to Harbor.
 
 **Phase 2 — RKE2-Infra cluster**
+
 1. Foreman provisions 3 server VMs; Puppet installs RKE2 server with config pointing at Kemp VIP.
 2. Bootstrap server 1, join servers 2 and 3.
 3. Foreman provisions N agent VMs/bare metal; Puppet installs RKE2 agent.
@@ -697,6 +708,7 @@ B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack
 7. Onboard first workload.
 
 **Phase 3 — RKE2-GPU cluster**
+
 1. Repeat Phase 2 with cluster-specific VIPs/CIDRs/DNS.
 2. Agent nodes are the L40 / B200 / B300 bare-metal hosts.
 3. Puppet installs DDN Lustre client on agents (`dnf install ddn-lustre-client`).
@@ -706,11 +718,13 @@ B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack
 7. Onboard first inference workload.
 
 **Phase 4 — Operationalize**
+
 1. Configure RKE2 etcd snapshots to S3 (Pure FlashBlade) on both clusters; verify a restore in a test environment.
 2. Document and rehearse the disaster-recovery playbook.
 3. Scope Slinky pilot if interest persists (not on critical path).
 
 **Phase 5 — Future**
+
 - RKE2-GPU-2 mirror cluster: with Rancher ClusterClass templates, this is a clone-and-rename operation. Reuse same Foreman host group, Puppet profile, Kemp VIP pattern.
 - Slinky integration for specific use cases (Slurm-on-k8s for ML training jobs, or slurm-bridge for an overflow node tier).
 
@@ -726,6 +740,7 @@ B200 SXM hosts pull ~1000W per GPU; B300 will be similar or higher. Confirm rack
 ### 10.2 Adding a third cluster (RKE2-GPU-2)
 
 Reusable as-is (most things, more than the OKD design):
+
 - All Foreman/Puppet/Katello content.
 - Kemp LB pattern.
 - DNS pattern.
@@ -733,6 +748,7 @@ Reusable as-is (most things, more than the OKD design):
 - Pure CSI, DDN exa-csi-driver, GPU Operator, monitoring/logging — all redeployed via the same Helm values.
 
 Needs new design:
+
 - Unique CIDRs (pod, service, node).
 - DR vs active-active decision (DR-4 from main design doc).
 
@@ -747,32 +763,40 @@ Needs new design:
 > Many open items from `design.md` collapse if you go RKE2. New decisions surface in their place. IDs prefixed `RDR-` (Rke2 Decisions Revisited) to distinguish from the OKD doc's DR-x.
 
 **Resolved by choosing RKE2:**
+
 - ~~DR-1 (separate etcd tier)~~ — not relevant; RKE2 etcd lives on servers, same supported pattern.
 - ~~DR-2 (RHEL workers + Puppet vs FCOS+MCO)~~ — moot; RKE2 is RHEL+Puppet by design.
 - ~~G-1 (etcd backup not automated)~~ — RKE2 enables 2×/day snapshots by default; just configure S3.
 
 **Still open (carry over from OKD doc):**
+
 - DR-3 — VMware snapshots of mgmt RKE2 are still not a substitute for etcd snapshots. Use RKE2's native snapshot + S3.
 - DR-4 — Mirror cluster purpose (DR / active-active / overflow) — same question, same answer needed.
 
 **New decisions surfaced by RKE2:**
 
 ### RDR-1 — Custom cluster vs node-driver provisioning
+
 Rancher can either (a) provision and lifecycle the host VMs/hardware via the vSphere/bare-metal node driver, or (b) consume hosts that Foreman+Puppet already provisioned ("custom cluster"). Recommendation: custom cluster, because Foreman+Puppet already do host lifecycle better than Rancher would.
 
 ### ~~RDR-2 — CNI choice~~ ✅ Resolved: **Cilium on both clusters**
+
 **Decision:** Cilium for both RKE2-Infra and RKE2-GPU. **Why:** one technology to learn, one troubleshooting toolbox, one set of operational muscle that applies to the whole fleet. The GPU cluster needs eBPF observability (Hubble) for inference debugging anyway; standardizing the infra cluster on Cilium too is cheaper than running two CNIs forever. The marginal complexity of Cilium-on-infra is small relative to the recurring cost of operating Canal + Cilium in parallel. **Full treatment in §3.4.**
 
 ### ~~RDR-3 — Harbor placement~~ ✅ Resolved: **In-cluster on the mgmt RKE2 cluster, central instance only day 1**
+
 Harbor lives on the consolidated 5-node mgmt cluster as a Helm-deployed workload. Image storage backend points at Pure FlashBlade S3; Postgres backed by CloudNativePG (multi-DB cluster shared with Keycloak); Redis via Bitnami chart. **Per-cluster Harbor proxy projects deferred** — add only if pull bandwidth from central Harbor → workload clusters becomes a real bottleneck. Full treatment in §4.1.1 + §9 Phase 1.
 
 ### ~~RDR-4 — Keycloak placement and HA~~ ✅ Resolved: **In-cluster on the mgmt RKE2 cluster**
+
 Keycloak runs on the mgmt cluster (2 replicas via official Helm chart) with Postgres backed by the same CloudNativePG cluster as Harbor. The "circular dependency with Rancher" concern is mitigated by Rancher's local-admin break-glass account (never federated, password vaulted, used only for emergencies). Workload clusters depend on Keycloak for new logins but existing tokens + service accounts continue working through any Keycloak outage; pods on workload clusters never become unreachable. Full treatment in §4.1.1.
 
 ### RDR-5 — Pod security policy engine
+
 PSA + Kyverno or PSA + Gatekeeper. Both are credible; Kyverno's syntax is friendlier for shops without OPA experience. Recommendation: Kyverno unless there's an existing Gatekeeper investment.
 
 ### RDR-6 — Rancher Prime (paid SUSE support) vs community
+
 Pay for Rancher Prime support, or run on community RKE2 + Rancher? Recommendation: at this scale (3 production clusters, GPU inference workload), Rancher Prime is worth the line item. SUSE's support is responsive and the cost is small relative to operational risk.
 
 ### ~~RDR-7 — L7 ingress: Connection Manager Ingress Controller vs ingress-nginx~~ ✅ Resolved: **Connection Manager Ingress Controller adopted; ingress-nginx removed**
@@ -784,6 +808,7 @@ Pay for Rancher Prime support, or run on community RKE2 + Rancher? Recommendatio
 The Ingress Controller is **an add-on installed on the Connection Manager itself**, not a pod in the Kubernetes cluster. There is no in-cluster controller pod, no Helm chart for the controller, no in-cluster ServiceAccount specifically for the controller.
 
 How it works:
+
 1. CM admin installs the add-on via UI (`Virtual Services > Kubernetes Settings > Install`) and reboots the CM.
 2. A kubeconfig file with read access to the cluster's K8s API is uploaded to the CM.
 3. The CM **polls the K8s API directly** at the configured Ingress Watch Timeout interval (30–900 seconds; default suggested ~60s).
@@ -794,6 +819,7 @@ The "controller" lives on Kemp hardware/VM and treats K8s as a configuration sou
 
 **RBAC for the kubeconfig uploaded to the CM:**
 The CM's K8s service account needs cluster-wide read access on:
+
 - `ingresses.networking.k8s.io` (watch, list, get)
 - `services` (watch, list, get)
 - `endpoints` / `endpointslices.discovery.k8s.io` (watch, list, get)
@@ -805,6 +831,7 @@ The CM's K8s service account needs cluster-wide read access on:
 This is a single ServiceAccount + ClusterRole + ClusterRoleBinding per cluster, with the kubeconfig pointed at that SA's token. Apply via ArgoCD as part of the platform manifests.
 
 **Why this architecture over ingress-nginx:**
+
 - Kemp is fully licensed; the Ingress Controller add-on ships with the existing investment.
 - Kernel-space TLS offloading on the CM outperforms containerized userspace ingress-nginx (PDF Chapter 1).
 - Single management surface — CM UI for all north-south traffic (L4 + L7).
@@ -813,6 +840,7 @@ This is a single ServiceAccount + ClusterRole + ClusterRoleBinding per cluster, 
 - ~50+ annotations expose deep L7 controls (WAF, OIDC auth integration with Keycloak, cipher sets, persistence, health checks, HTTP/2, FIPS cipher set, etc.) — many things you'd otherwise build with a separate ingress-nginx + service-mesh stack.
 
 **Two operating modes available:**
+
 - **Ingress Mode** (recommended for day 1) — standard K8s `Ingress` objects with `ingressClassName: lmingress` and `kemp.ax/*` annotations auto-provision CM Virtual Services. Cross-functional DevOps shape.
 - **Service Mode** — pre-existing CM Virtual Services are attached to K8s Services via `kempLB: Enabled` label and `vsid` annotation. Useful if NetOps wants strict separation from K8s state.
 
@@ -845,33 +873,43 @@ This is a single ServiceAccount + ClusterRole + ClusterRoleBinding per cluster, 
 > Things that need explicit design-time attention even after the major decisions are locked.
 
 ### G-1 (revised) — Image registry sourcing
+
 Confirm whether to deploy a new Harbor or plug into an existing org Harbor / Quay. Affects sizing + HA design.
 
 ### G-2 (revised) — Identity flow
+
 Confirm whether Keycloak goes on dedicated VMs (recommended above) or in-cluster, and which AD federation mode (LDAP federation or AD-as-IdP-via-Kerberos).
 
 ### G-3 — Long-term log retention
+
 Cluster-local Loki retains weeks. For compliance retention beyond that, ship to org SIEM or long-term S3 with Pure FlashBlade lifecycle policy.
 
 ### G-4 — RDMA network design (if applicable)
+
 If multi-node B200/B300 inference workloads do RDMA via NVIDIA Network Operator, the GPU fabric VLAN and switch config (RoCE vs InfiniBand) are an explicit hardware-and-network design exercise, not just a Kubernetes config item.
 
 ### G-5 — Slinky pilot scope
+
 If Slinky is going to be more than a "could do later" capability, scope a pilot: which Slurm cluster, which workload, slurm-operator vs slurm-bridge. Don't gate the production deployment on it.
 
 ### G-6 — Air-gap / disconnected install posture
+
 Same as in the OKD doc. RKE2 has good disconnected-install support — `rke2-airgap` images and packaged binaries. If disconnected, plan the pull-through registry (Harbor) and content lifecycle in Katello.
 
 ### G-7 — Secrets management
+
 External Secrets Operator + HashiCorp Vault, or Sealed Secrets, or in-cluster CSI secrets store. Decide before workloads land.
 
 ### G-8 — Capacity / node count targets
+
 Same as OKD doc G-9. Nail down a starting count per cluster.
 
 ### G-9 — Monitoring federation
+
 Rancher's `kube-prometheus-stack` deployment is per-cluster. For org-wide observability, federate to a central Prometheus / Thanos / Mimir instance. Decide if that's day-1 or day-2.
 
 ### G-10 — Change management / promotion
+
 Same as OKD doc G-10. ArgoCD or Flux for workload manifests, app-of-apps per cluster.
 
 ---
@@ -879,11 +917,13 @@ Same as OKD doc G-10. ArgoCD or Flux for workload manifests, app-of-apps per clu
 ## 13. Open Questions for the Next Iteration
 
 **Settled by choosing RKE2 (vs. design.md):**
+
 - ~~Worker OS~~ → RHEL 9.
 - ~~Worker config system~~ → Puppet.
 - ~~etcd backup~~ → built-in RKE2 default + S3 to Pure FlashBlade.
 
 **Resolved earlier (carry over from OKD doc):**
+
 - LB choice → Kemp.
 - Storage → Pure (`pure-csi`) + DDN Lustre (DDN exa-csi-driver).
 - Identity → AD via Keycloak OIDC.
@@ -894,6 +934,7 @@ Same as OKD doc G-10. ArgoCD or Flux for workload manifests, app-of-apps per clu
 - **L7 ingress → Kemp Ingress Controller; ingress-nginx disabled (RDR-7 resolved).** §5.2 + §11. Three open verification items (pod-CIDR L3 reachability, TLS Secret auto-push, RBAC) → install-spike concerns, not architectural ones.
 
 **Still open:**
+
 1. RDR-1 (custom cluster vs node-driver) — recommended custom cluster; confirm.
 2. RDR-5 (Kyverno vs Gatekeeper) — recommend Kyverno.
 3. RDR-6 (Rancher Prime vs community) — recommend Prime.
