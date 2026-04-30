@@ -217,8 +217,8 @@ cni: cilium                        # decided per RDR-2; default would be canal
 disable-kube-proxy: true           # Cilium kubeProxyReplacement enabled
 disable:
   - rke2-ingress-nginx             # Kemp Ingress Controller handles L7 — see §5.2 and RDR-7
-cluster-cidr: 10.42.0.0/16         # unique per cluster (must be L3-reachable from Kemp data-path)
-service-cidr: 10.43.0.0/16
+cluster-cidr: 10.40.0.0/20         # unique per cluster (must be L3-reachable from Kemp data-path) — see §3.4 for allocation table
+service-cidr: 10.41.0.0/22
 node-label:
   - "topology.kubernetes.io/region=onprem-dc1"
 ```
@@ -335,11 +335,20 @@ disable-kube-proxy: true
 
 #### Pod / Service CIDRs
 
-Per-cluster, non-overlapping with anything else. RKE2 defaults are `10.42.0.0/16` (pods) and `10.43.0.0/16` (services); use unique ranges per cluster:
+Per-cluster, non-overlapping with anything else. **RKE2 defaults are `10.42.0.0/16` (pods) and `10.43.0.0/16` (services) — far oversized for our node counts.** With Cilium's default `/24` per node, a `/16` cluster CIDR supports 256 nodes; we plan for at most ~7 nodes per cluster today with reasonable growth headroom. Sizing each cluster at `/20` (16 nodes) is the right balance.
 
-- RKE2-Infra: pods `10.42.0.0/16`, services `10.43.0.0/16`
-- RKE2-GPU: pods `10.44.0.0/16`, services `10.45.0.0/16`
-- RKE2-GPU-2 (future): pods `10.46.0.0/16`, services `10.47.0.0/16`
+| Cluster | Pod CIDR | Service CIDR | Nodes today | Cap at /20 |
+|---|---|---|---|---|
+| RKE2-Mgmt | `10.40.0.0/20` | `10.41.0.0/22` | 5 | 16 |
+| RKE2-Infra | `10.40.16.0/20` | `10.41.4.0/22` | 7 | 16 |
+| RKE2-GPU | `10.40.32.0/20` | `10.41.8.0/22` | 7 | 16 |
+| RKE2-GPU-2 (future) | `10.40.48.0/20` | `10.41.12.0/22` | TBD | 16 |
+
+Total reserved: `10.40.0.0/18` for pods, `10.41.0.0/20` for services across the four-cluster fleet.
+
+**Why the per-node `/24` stays even though clusters shrink:** Cilium's `cluster-pool` default of `/24` per node (256 IPs) supports kubelet's default 110 pods/node with headroom. Shrinking to `/25` per node caps pod density at ~110 forever; not worth the savings.
+
+**No CIDR collisions across clusters** is a hard requirement — Kemp's routing table can't have two next-hops for the same destination network. The `/20` per cluster within `10.40.0.0/18` makes this collision-free by construction.
 
 #### MTU
 
@@ -532,10 +541,10 @@ This is a hard requirement for the CM-as-ingress-controller architecture. Per th
 # For most CNIs (including Cilium native-routing mode):
 kubectl get nodes -o jsonpath="{range .items[*]}{'Destination: '}{.spec.podCIDR}{'\t'}{'Gateway: '}{.status.addresses[0].address}{'\n'}{end}"
 
-# Example output:
-# Destination: 10.42.0.0/24    Gateway: 10.50.20.31
-# Destination: 10.42.1.0/24    Gateway: 10.50.20.32
-# Destination: 10.42.2.0/24    Gateway: 10.50.20.33
+# Example output (mgmt cluster, pod CIDR 10.40.0.0/20, /24 per node):
+# Destination: 10.40.0.0/24    Gateway: 10.50.20.31
+# Destination: 10.40.1.0/24    Gateway: 10.50.20.32
+# Destination: 10.40.2.0/24    Gateway: 10.50.20.33
 # (one row per node, with that node's pod CIDR slice)
 ```
 
@@ -554,10 +563,10 @@ Cilium has two main modes that change this picture significantly:
 **Recommended Cilium config for Kemp Ingress Controller compatibility:**
 
 ```yaml
-# Cilium Helm values
+# Cilium Helm values — set ipv4NativeRoutingCIDR per cluster to match that cluster's pod CIDR
 tunnel: disabled
 routingMode: native
-ipv4NativeRoutingCIDR: "10.42.0.0/14"  # cover all clusters' pod CIDR space
+ipv4NativeRoutingCIDR: "10.40.0.0/20"   # mgmt; each cluster uses its own per §3.4 allocation
 bgpControlPlane:
   enabled: true   # if your network fabric supports BGP; otherwise leave false and use static routes
 autoDirectNodeRoutes: true  # auto-install routes between nodes

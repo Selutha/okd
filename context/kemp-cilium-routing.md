@@ -102,13 +102,14 @@ Cilium Helm values need:
 # Cilium Helm chart values (set via HelmChartConfig override or RKE2 manifest dir)
 tunnelProtocol: disabled         # native routing, no VXLAN encapsulation
 ipam:
-  mode: cluster-pool             # gives each node a /24 slice
-ipv4NativeRoutingCIDR: 10.42.0.0/16   # match cluster-cidr per cluster
+  mode: cluster-pool             # gives each node a /24 slice by default
+ipv4NativeRoutingCIDR: 10.40.0.0/20   # match THIS cluster's cluster-cidr (per cluster)
 autoDirectNodeRoutes: true       # nodes install routes for each other's slices
 ```
 
-Different cluster CIDRs per cluster (per design §3.4): infra=10.42.0.0/16,
-gpu=10.44.0.0/16, gpu-2=10.46.0.0/16. The CM's route list per cluster matches.
+Per-cluster `ipv4NativeRoutingCIDR` matches that cluster's pod CIDR (mgmt
+`10.40.0.0/20`, infra `10.40.16.0/20`, etc — see §3.4 of design-rke2.md). The
+CM's route list per cluster covers only that cluster's slice.
 
 ## Verification — how to know it's working
 
@@ -134,47 +135,53 @@ adjacency or CM interface config is the problem.
 
 ## Per-cluster routing tables — fill in during build
 
+CIDR allocation (per design-rke2.md §3.4):
+
+| Cluster | Pod CIDR | Per-node slice (Cilium default /24) | Cap |
+|---|---|---|---|
+| mgmt | `10.40.0.0/20` | `10.40.0.0/24` … `10.40.15.0/24` | 16 nodes |
+| infra | `10.40.16.0/20` | `10.40.16.0/24` … `10.40.31.0/24` | 16 nodes |
+| gpu | `10.40.32.0/20` | `10.40.32.0/24` … `10.40.47.0/24` | 16 nodes |
+| gpu-2 (future) | `10.40.48.0/20` | `10.40.48.0/24` … `10.40.63.0/24` | 16 nodes |
+
+No collisions: the four `/20` ranges fit cleanly in `10.40.0.0/18` with no overlap.
+
 ### mgmt cluster
 
-Pod CIDR: 10.42.0.0/16 — 5 server nodes, no agents.
+5 servers, no agents. 5 routes total (cap 16).
 
 | Destination | Gateway (node IP) | Notes |
 |---|---|---|
-| 10.42.0.0/24 | TBD (mgmt-server-001 IP) | |
-| 10.42.1.0/24 | TBD (mgmt-server-002 IP) | |
-| 10.42.2.0/24 | TBD (mgmt-server-003 IP) | |
-| 10.42.3.0/24 | TBD (mgmt-server-004 IP) | |
-| 10.42.4.0/24 | TBD (mgmt-server-005 IP) | |
+| 10.40.0.0/24 | TBD (mgmt-server-001 IP) | First node Cilium assigns |
+| 10.40.1.0/24 | TBD (mgmt-server-002 IP) | |
+| 10.40.2.0/24 | TBD (mgmt-server-003 IP) | |
+| 10.40.3.0/24 | TBD (mgmt-server-004 IP) | |
+| 10.40.4.0/24 | TBD (mgmt-server-005 IP) | |
+
+The actual `/24` slice each node gets is decided by Cilium at first start, not by
+ordinal — query `kubectl get nodes -o jsonpath='{...}{.spec.podCIDR}{...}'` after
+the cluster is up to confirm.
 
 ### infra cluster
 
-Pod CIDR: 10.42.0.0/16 (separate from mgmt — different cluster, different L3
-domain from CM perspective).
+3 servers + 4 agents = 7 nodes today. 7 routes.
 
-Wait — this is a CIDR collision risk if both clusters use 10.42.0.0/16. Two
-options:
-
-1. **Use distinct pod CIDRs per cluster** (the design says this in §3.4):
-   - mgmt: TBD (allocate from your IPAM)
-   - infra: 10.42.0.0/16
-   - gpu: 10.44.0.0/16
-   - gpu-2: 10.46.0.0/16
-
-2. **Same CIDR but the CM has a separate routing context per cluster** — much
-   harder, requires VRF or per-VLAN route tables. Skip.
-
-Pick option 1. The mgmt cluster needs its own pod CIDR allocated. Update
-design-rke2.md §3.4 if it currently has mgmt sharing infra's 10.42.0.0/16.
+| Destination range | Gateway range | Notes |
+|---|---|---|
+| 10.40.16.0/24 … 10.40.22.0/24 | infra-server-001..003, infra-agent-001..004 | actual mapping from `kubectl get nodes` |
 
 ### gpu cluster
 
-Pod CIDR: 10.44.0.0/16 — 3 servers + N agents (B200/B300/L40 hosts).
+3 servers + 4 agents (B200/B300/L40 hosts). 7 routes today, growth expected as
+GPU workload scales.
 
-Routes added as agents are provisioned. Plan for a sweep after each agent batch.
+| Destination range | Gateway range | Notes |
+|---|---|---|
+| 10.40.32.0/24 … 10.40.38.0/24 | gpu-server-001..003, gpu-agent-001..004 | refresh routes after each agent batch |
 
 ### gpu-2 cluster (future mirror)
 
-Pod CIDR: 10.46.0.0/16. Routes added when cluster is built.
+Pod CIDR `10.40.48.0/20`. Routes added when cluster is built.
 
 ## Build checklist (per cluster, after the cluster is up)
 
