@@ -1,0 +1,13 @@
+pkg/
+spec/fixtures/manifests/
+spec/fixtures/modules/
+.vagrant/
+*.swp
+*.bak
+.bundle/
+vendor/
+coverage/
+log/
+.idea/
+.pdkignore
+Gemfile.lock

@@ -99,29 +99,32 @@
 
 ## 2. Foreman / Katello / Puppet Responsibilities
 
-### 2.1 In scope
+### 2.1 In scope — the OS↔Rancher boundary
 
-| Target | OS | Provisioning method | Post-install config |
+The OS layer (Foreman/Katello/Puppet) stops at "host is ready to receive a Kubernetes install." The Kubernetes layer (Rancher) takes over from there. Puppet does **not** install the RKE2 binary, manage RKE2 versions, or touch cluster lifecycle — those are Rancher's responsibility via the registration command and system-upgrade-controller (SUC).
+
+| Target | OS | Provisioning method | Puppet's role (via `ufrc_rke2` module) |
 |---|---|---|---|
-| RKE2 servers (workload clusters) | RHEL 9 | Foreman kickstart | Puppet (base hardening, NTP, SSH keys, RKE2 install + config) |
-| RKE2 agents (bare-metal workers) | RHEL 9 | Foreman kickstart | Puppet (base + RKE2 agent + DDN Lustre client + NVIDIA repo) |
-| Rancher RKE2 nodes (mgmt cluster) | RHEL 9 | Foreman kickstart | Puppet (base + RKE2 server + Rancher Helm prep) |
-| Bastion / install host | RHEL 9 | Foreman kickstart | Puppet (kubectl, helm, rancher CLI, jq) |
-| Keycloak HA pair | RHEL 9 | Foreman kickstart | Puppet (Keycloak in containers or systemd) |
-| Harbor host (optional, if not in-cluster) | RHEL 9 | Foreman kickstart | Puppet (Harbor + Pure CSI mount) |
+| RKE2 servers (all clusters) | RHEL 9 | Foreman kickstart | Base hardening + RKE2 prereqs (sysctls, firewalld, `rke2-selinux`, kernel modules) + config drop-in at `/etc/rancher/rke2/config.yaml.d/00-puppet.yaml` + one-shot Rancher registration exec |
+| RKE2 agents (bare-metal workers) | RHEL 9 | Foreman kickstart | Same as servers + DDN Lustre client (infra/GPU agents) + NVIDIA repo (GPU agents only — driver itself comes from GPU Operator) |
+| Bastion / install host | RHEL 9 | Foreman kickstart | kubectl, helm, rancher CLI, jq, **pdsh** (used by `bootstrap-cluster.sh`) |
+
+Keycloak and Harbor are no longer Puppet-managed hosts — they run as Helm charts inside the mgmt RKE2 cluster (per RDR-3 and RDR-4).
 
 ### 2.2 Out of scope
 
-- Foreman does **not** provision the cluster itself — the cluster is provisioned by Rancher (which calls into CAPI / CAPRKE2 under the hood) once the bare hosts exist.
-- Foreman/Puppet do not modify in-cluster Kubernetes objects.
+- **RKE2 binary install** — done by Rancher's registration `curl|sh`, not by Puppet.
+- **RKE2 version pinning and upgrades** — owned by the Rancher Cluster CR (`spec.kubernetesVersion`); SUC drives node-by-node rolling upgrades.
+- **In-cluster Kubernetes objects** — Foreman/Puppet do not modify K8s resources; that's GitOps territory.
+- **Cluster identity** (token, server URL, node-name) — supplied by Rancher's registration drop-in at `config.yaml.d/50-rancher.yaml`, not by Puppet hiera.
 
 ### 2.3 Integration points
 
-- **Katello content view** for the RKE2 channel (so RKE2 binary versions are managed alongside other RHEL content).
-- **Katello content view** for the DDN Lustre client repo (so `dnf install ddn-lustre-client` works on agents).
-- **Puppet module** for RKE2 install (community modules exist; or write a thin one — the install is `curl ... | sh` plus a config file).
+- **Katello content view for the DDN Lustre client repo** (so `dnf install ddn-lustre-client` works on agents). No RKE2-related content views — RKE2 binary install is sourced directly from `get.rke2.io` via the Rancher registration `curl|sh` (not air-gapped, direct internet access available).
+- **`ufrc_rke2` Puppet module** — custom thin module (3 manifest classes: `prereqs`, `config`, `register`), no upstream Forge dependency. Both candidate Forge modules (lsst-rke2 and etma-rke2) were evaluated and rejected; rationale captured in §3.2.
+- **`bootstrap-cluster.sh`** on the bastion — bash + pdsh + Rancher API. Fetches the registration command for the target cluster+role from Rancher, pdsh's it to the matching genders host group. Designed for reuse across future cluster builds, not just the initial three.
 - **Hostname/IP allocation** — Foreman is source of truth for RKE2 node hostnames and IPs.
-- **Fixed registration address** (RKE2 requirement) — Kemp VIP that all servers + agents register against (port 9345). Same Kemp box used for the cluster's API VIP (6443).
+- **Fixed registration address** — Kemp VIP that all servers + agents register against (port 9345). Same Kemp box used for the cluster's API VIP (6443).
 
 ---
 
@@ -174,21 +177,38 @@ Server count is per-cluster — see §3.1.1 for the redundancy math and the curr
 
 ### 3.2 Install flow
 
-1. Foreman PXE-installs RHEL 9 on the cluster's server VMs (5 for mgmt, 3 for infra/GPU per §3.1.1).
-2. Puppet applies base profile (NTP, SSH keys, hardening, repos) and stages the RKE2 binary + `/etc/rancher/rke2/config.yaml`.
-3. **Server 1** starts first with `systemctl enable --now rke2-server`. Token is generated.
-4. **Remaining servers** start with the same token and `server: https://<kemp-vip>:9345` in their config — they join via the Kemp VIP. Add servers serially (one at a time) so quorum is maintained throughout the bootstrap.
-5. Once the cluster is up and `kubectl get nodes` shows all servers ready, **agent nodes** are provisioned by Foreman and Puppet installs `rke2-agent` pointing at the Kemp VIP.
-6. Cluster is registered with Rancher (or, alternative: Rancher's CAPRKE2 provider provisions everything from the start, in which case steps 3-5 are driven by Rancher CLI/UI).
-7. Day-2 RKE2 binary upgrades are driven by Rancher's upgrade controller (drains and replaces one node at a time).
+1. **Foreman** PXE-installs RHEL 9 on the cluster's server VMs (5 for mgmt, 3 for infra/GPU per §3.1.1).
+2. **Puppet (`ufrc_rke2` module)** applies base profile + RKE2 prereqs: sysctls (`net.ipv4.ip_forward`, `br_netfilter`, `vm.max_map_count`), firewalld rules (6443, 9345, 10250, 4240, 8472), kernel modules (overlay, br_netfilter). **SELinux is disabled cluster-wide per fleet practice (see §3.3) — no `rke2-selinux` package required.** Renders `/etc/rancher/rke2/config.yaml.d/00-puppet.yaml` from a hiera hash (`stdlib::to_yaml`) — drop-in style, doesn't touch other files in `.d/`. Hash carries `cni: cilium`, `disable-kube-proxy: true`, `disable: [rke2-ingress-nginx]`, `profile: cis`, tls-san additions, node-labels, cluster/service CIDRs. **Token, server URL, and node-name are NOT here** — they come from Rancher.
+3. **Operator** creates the Cluster CR in Rancher with target `kubernetesVersion: v1.35.4+rke2r1` (current pin, see §11 RDR-8). Rancher generates registration commands per role (seed-server / additional-server / agent).
+4. **Operator** runs `bootstrap-cluster.sh <cluster> seed` from the bastion. Script calls Rancher API to fetch the seed-server registration command, pdsh's it to the genders group `<cluster>-seed` (one host). The script forces `INSTALL_RKE2_METHOD=tar` (binary install at `/usr/local/bin/rke2`) — see §3.2 install-method note. The registration command writes the cluster identity drop-in to `/etc/rancher/rke2/config.yaml.d/50-rancher.yaml`. RKE2 starts with both Puppet's and Rancher's drop-ins merged.
+5. **Operator** runs `bootstrap-cluster.sh <cluster> server` once the seed is Active in Rancher UI. Script fetches the additional-server registration command and pdsh's it to the `<cluster>-server` genders group. Servers join serially via the Kemp VIP at port 9345.
+6. **Operator** runs `bootstrap-cluster.sh <cluster> agent` for clusters with separate agent nodes (infra and GPU; mgmt has no agents). Same flow, different registration command.
+7. **Day-2 RKE2 binary upgrades** are driven by Rancher's `system-upgrade-controller` — bump `kubernetesVersion` in the Cluster CR; SUC drains and replaces nodes one at a time. Puppet does NOT touch RKE2 versions; `ufrc_rke2::register` is idempotent (gated on existing etcd data) so repeat agent runs are no-ops.
+
+#### Install method: binary (tarball), not RPM
+
+`get.rke2.io` defaults to RPM install on RHEL family, but Rancher's `system-upgrade-controller` does NOT use `dnf` to upgrade RPM-installed nodes — it overwrites the binary at `/usr/bin/rke2` with a fresh download, leaving the RPM database stale (`rpm -q rke2-server` reports the install-time version while `rke2 --version` reports the upgraded version, and `rpm -V` flags the binary as modified). See [rancher/rke2#661](https://github.com/rancher/rke2/issues/661) for the open RFE.
+
+To avoid the RPM-database-divergence problem, `bootstrap-cluster.sh` forces `INSTALL_RKE2_METHOD=tar` when invoking the registration command. RKE2 binary lands at `/usr/local/bin/rke2`; SUC upgrades the same path. RPM database is not used to track RKE2 — Rancher Cluster CR's `kubernetesVersion` is the single source of truth for cluster version state.
+
+#### Why a custom `ufrc_rke2` module instead of a Forge community module
+
+Both candidate Forge modules were evaluated and rejected:
+
+- **lsst-rke2** — RPM-only install, no binary path. Worse, it actively *deletes* `/etc/rancher/rke2/config.yaml.d/` to enforce single-source-of-truth at full `config.yaml`. That would actively break Rancher's registration drop-in pattern.
+- **etma-rke2** — supports binary install and uses the drop-in pattern (right *shape*) but the config template is hardcoded to a small fixed set of keys and can't render `cni`, `disable-kube-proxy`, `profile: cis`, etc. Has a Ruby syntax bug at `@max-pods` in the template. REFERENCE.md still references "k3s." Last commit September 2023. Puppet 4–7 only in metadata.
+
+The right shape (drop-in pattern + binary install) is taken; the implementation is custom: ~80 lines across `ufrc_rke2::{prereqs,config,register}` with `stdlib::to_yaml(lookup('rke2_config', merge => deep))` for free-form config rendering. No upstream module dependency.
 
 ### 3.3 RKE2 configuration choices
 
-`/etc/rancher/rke2/config.yaml` per cluster, baseline:
+Configuration is split between **Puppet's drop-in** at `/etc/rancher/rke2/config.yaml.d/00-puppet.yaml` (rendered by the `ufrc_rke2` module from a hiera hash) and **Rancher's drop-in** at `/etc/rancher/rke2/config.yaml.d/50-rancher.yaml` (written by the registration command). RKE2 merges all files in `config.yaml.d/` lexicographically at startup.
+
+**Puppet's drop-in (cluster-wide preferences, baseline):**
 
 ```yaml
-profile: cis                       # CIS Kubernetes Benchmark profile
-selinux: true                      # SELinux enforcing on RHEL hosts
+profile: cis                       # CIS Kubernetes Benchmark — kubelet/apiserver hardening
+selinux: false                     # SELinux disabled cluster-wide; matches fleet practice — see SELinux note below
 write-kubeconfig-mode: "0640"
 tls-san:
   - <cluster-api-fqdn>
@@ -203,7 +223,20 @@ node-label:
   - "topology.kubernetes.io/region=onprem-dc1"
 ```
 
-CIS profile is automatically applied by RKE2 when set — no separate hardening pass needed. SELinux `enforcing` is preserved (vs. OKD where SELinux is also enforcing on FCOS/SCOS, just managed differently).
+**SELinux disabled — rationale:** Matches existing fleet practice (other K8s clusters in the environment run SELinux disabled). The CIS Kubernetes profile (`profile: cis`) is K8s-component hardening (kubelet flags, apiserver flags, RBAC, audit) and does NOT require host-level SELinux — that's the CIS RHEL Benchmark, a separate document. Concrete reasons specific to this build for keeping SELinux off: pods on the GPU cluster will mount Lustre (DDN client) for training data + scratch + checkpoints — SELinux contexts on Lustre paths are unproven and would surface as AVC denials inside containers; HPC researchers bring custom workloads (pytorch/Singularity-converted images, conda envs) where AVC denials present as silent CrashLoopBackOff with no obvious cause; GPU Operator's driver/toolkit pods plus RDMA device access (/dev/infiniband/*, /dev/nvidia*) add additional SELinux surface that's worth its weight only when paired with SELinux-fluent operations. Security boundary lives elsewhere: image scanning at Harbor, Cilium NetworkPolicy, namespace isolation, Kyverno (RDR-5), AD-based access. SELinux on the K8s nodes would be belt-and-suspenders against threats those layers already cover, while creating a permanent "this cluster is different" footnote in operations.
+
+**Rancher's drop-in (cluster identity, written by registration `curl|sh`):**
+
+```yaml
+# Example shape — actual content generated by Rancher per cluster/role
+server: https://<kemp-vip>:9345    # join address
+token: <rancher-managed-token>     # cluster registration token
+node-name: <foreman-fqdn>
+```
+
+**Why split this way:** Puppet owns cluster-wide *preferences* (CNI, hardening, network ranges); Rancher owns cluster *identity* (where to join, who I am). Neither needs to know about the other's keys. Puppet hiera does NOT carry the token or server URL — that decoupling is what lets the same Puppet code apply across mgmt/infra/GPU/future-clusters without per-cluster secret management on the Puppet side.
+
+CIS profile is automatically applied by RKE2 when set — no separate hardening pass needed.
 
 ### 3.4 Networking inside the cluster — CNI choice
 
@@ -795,9 +828,29 @@ Keycloak runs on the mgmt cluster (2 replicas via official Helm chart) with Post
 
 PSA + Kyverno or PSA + Gatekeeper. Both are credible; Kyverno's syntax is friendlier for shops without OPA experience. Recommendation: Kyverno unless there's an existing Gatekeeper investment.
 
-### RDR-6 — Rancher Prime (paid SUSE support) vs community
+### ~~RDR-6 — Rancher Prime (paid SUSE support) vs community~~ ✅ Resolved: **Community**
 
-Pay for Rancher Prime support, or run on community RKE2 + Rancher? Recommendation: at this scale (3 production clusters, GPU inference workload), Rancher Prime is worth the line item. SUSE's support is responsive and the cost is small relative to operational risk.
+**Decision:** Community Rancher (no SUSE Rancher Prime contract). Self-supported. **Trade-off accepted:** SUSE's formal Support Matrix is interpreted as a tested-combinations guideline rather than a contractual constraint. RKE2's release-time QA is the actual technical compatibility gate; what's listed in the matrix is paid-support-coverage, not "what works." When troubleshooting, a problem on a "tested-but-not-matrix-listed" combination is "you knew the trade-off," not a bug to escalate.
+
+If support posture changes (project moves to Rancher Prime, or a SUSE contract is signed), revisit version pinning — the matrix becomes a hard constraint at that point.
+
+### RDR-8 — Initial K8s/RKE2 version pin
+
+**Decision:** RKE2 **v1.35.4+rke2r1** (current stable as of 2026-04-24; re-confirm latest v1.35.x patch when actually creating the Cluster CRs — production deploy is weeks out, may roll forward). Bundled Cilium **v1.19.x** (RKE2 ships and validates the combo as part of release QA). Rancher Manager **2.13.4**.
+
+The v1.35 line dates to December 2025 (~5 months of soak by deploy time) with a healthy patch cadence. The formal Rancher Support Matrix lists v1.32–v1.34, but per RDR-6 we're community-supported and the matrix is a guideline, not a contract.
+
+**Upgrade-cadence philosophy:** pick a version and ride it. Don't reflexively upgrade to v1.36 the moment it's stable; wait until there's a concrete reason — CVE that doesn't backport, feature genuinely needed, ecosystem support gap closing.
+
+**Forward note (informational, not blocking):** RKE2 v1.36 will default to Traefik instead of ingress-nginx (per RKE2 release notes — `ingress-nginx` reaches EOL March 2026). Doesn't affect this design because `rke2-ingress-nginx` is already disabled in favor of the Kemp Connection Manager Ingress Controller (RDR-7). Worth knowing during the eventual v1.35 → v1.36 upgrade so the Traefik default doesn't surprise the operator.
+
+### RDR-9 — SELinux on RKE2 nodes
+
+**Decision:** **Disabled cluster-wide** (`selinux: false` in Puppet's config drop-in; no `rke2-selinux` package installed). Matches existing fleet practice — other K8s clusters in the environment run with SELinux disabled, and making the RKE2 clusters special creates a permanent "remember, RKE2 is different" footnote in operations.
+
+`profile: cis` stays enabled — K8s component hardening (kubelet flags, apiserver flags, RBAC, audit) is independent of host SELinux state. CIS Kubernetes Benchmark and CIS RHEL Benchmark are different documents.
+
+**HPC-specific rationale:** Lustre access from pods (training data, scratch, checkpoints on the GPU cluster), researcher-supplied container images, GPU Operator + RDMA device access — each introduces SELinux surface that would surface as AVC denials and silent pod failures. Security boundary lives at Harbor image scanning, Cilium NetworkPolicy, namespace isolation, Kyverno (RDR-5), and AD-based access. SELinux would be belt-and-suspenders against threats those layers already cover, at the cost of debugging friction the HPC user base would feel daily.
 
 ### ~~RDR-7 — L7 ingress: Connection Manager Ingress Controller vs ingress-nginx~~ ✅ Resolved: **Connection Manager Ingress Controller adopted; ingress-nginx removed**
 

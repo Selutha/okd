@@ -1,0 +1,34 @@
+{
+  "name": "ufrc-ufrc_rke2",
+  "version": "0.1.0",
+  "author": "ufrc",
+  "summary": "Manages RKE2 prereqs, config drop-ins, and Rancher registration on RHEL-family hosts",
+  "license": "Apache-2.0",
+  "source": "",
+  "dependencies": [
+    {
+      "name": "puppetlabs/stdlib",
+      "version_requirement": ">= 9.0.0 < 10.0.0"
+    }
+  ],
+  "operatingsystem_support": [
+    {
+      "operatingsystem": "RedHat",
+      "operatingsystemrelease": ["9"]
+    },
+    {
+      "operatingsystem": "AlmaLinux",
+      "operatingsystemrelease": ["9"]
+    },
+    {
+      "operatingsystem": "Rocky",
+      "operatingsystemrelease": ["9"]
+    }
+  ],
+  "requirements": [
+    {
+      "name": "puppet",
+      "version_requirement": ">= 7.0.0 < 9.0.0"
+    }
+  ]
+}
