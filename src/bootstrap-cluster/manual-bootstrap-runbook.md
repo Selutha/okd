@@ -47,13 +47,15 @@ In Rancher UI:
    - **etcd** + **Control Plane** → run on server nodes (seed and additional)
    - **Worker** → run on agent nodes
 3. The command looks like:
-   ```
+
+   ```bash
    curl --insecure -fL https://rancher.example.com/system-agent-install.sh | sudo sh -s - \
      --server https://rancher.example.com \
      --label 'cattle.io/os=linux' \
      --token <bigtoken>:<bigsecret> \
      --ca-checksum <hash>
    ```
+
 4. Copy the command for each role you need (server vs agent). The command itself
    is the same; only the role flags appended at the end differ.
 
