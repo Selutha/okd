@@ -1,15 +1,17 @@
 class { 'ufrc_rke2':
   node_type        => 'server',
   manage_firewalld => true,
+  vm_iface         => 'ens224',
+  mgmt_iface       => 'ens192',
   config           => {
     'profile'            => 'cis',
     'selinux'            => false,
     'cni'                => 'cilium',
     'disable-kube-proxy' => true,
     'disable'            => ['rke2-ingress-nginx'],
-    'cluster-cidr'       => '10.42.0.0/16',
-    'service-cidr'       => '10.43.0.0/16',
-    'tls-san'            => ['mgmt.example.com', '10.50.20.10'],
-    'node-label'         => ['topology.kubernetes.io/region=onprem-dc1'],
+    'cluster-cidr'       => '192.168.0.0/20',
+    'service-cidr'       => '192.168.16.0/20',
+    'tls-san'            => ['vkub-mgmt.ufhpc', '172.16.192.6'],
+    'node-label'         => ['topology.kubernetes.io/region=ufhpc-dh', 'cluster=mgmt'],
   },
 }

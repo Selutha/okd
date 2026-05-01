@@ -1,0 +1,35 @@
+# Cilium HelmChartConfig for the mgmt cluster.
+#
+# Drop this on the SEED node only, at /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml,
+# BEFORE running bootstrap-cluster.sh seed. RKE2's helm-controller picks it up on
+# rke2-server first start and merges these values with the bundled rke2-cilium chart.
+#
+# After the cluster is Active and Cilium is verified healthy, delete the file from
+# the node — etcd retains the HelmChartConfig CR. From that point on, day-2 changes
+# go via Rancher UI / kubectl edit on the live CR. This file in the repo stays as
+# the source-of-truth "how did we start this cluster" reference.
+#
+# CIDR scheme is per cidr-plan.md (192.168.0.0/16 sliced into /20 pairs).
+# Underlay MTU is 9000 on ens224 (verified). Pod MTU = 9000 - 50 byte VXLAN overhead.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-cilium
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    routingMode: tunnel
+    tunnelProtocol: vxlan
+
+    ipam:
+      mode: cluster-pool
+      operator:
+        clusterPoolIPv4PodCIDRList:
+          - 192.168.0.0/20
+        clusterPoolIPv4MaskSize: 25
+
+    mtu: 8950
+
+    kubeProxyReplacement: true
+    k8sServiceHost: vkub-mgmt.ufhpc
+    k8sServicePort: 6443

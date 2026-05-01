@@ -27,12 +27,24 @@
 # @param manage_firewalld
 #   Whether to open RKE2/Cilium ports in firewalld. Default false to avoid surprising
 #   sites that disable firewalld inside the cluster network.
+#
+# @param vm_iface
+#   Optional. Interface name carrying the high-speed/cluster network. When set, the
+#   IP of this interface is injected as `node-ip` in the rendered drop-in. Lets us
+#   keep node-ip out of per-host Foreman config — every host derives its own.
+#   A value of `node-ip` in $config takes precedence (escape hatch).
+#
+# @param mgmt_iface
+#   Optional. Interface name carrying the management network. When set, the IP of
+#   this interface is injected as `node-external-ip`. Same precedence rule as vm_iface.
 class ufrc_rke2 (
   Enum['server', 'agent']  $node_type,
   Hash                     $config = {},
   Optional[String[1]]      $registration_command = undef,
   Optional[String[1]]      $harbor_url = undef,
   Boolean                  $manage_firewalld = false,
+  Optional[String[1]]      $vm_iface = undef,
+  Optional[String[1]]      $mgmt_iface = undef,
 ) {
   contain ufrc_rke2::prereqs
   contain ufrc_rke2::config

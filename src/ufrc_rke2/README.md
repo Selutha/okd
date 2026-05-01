@@ -43,6 +43,32 @@ class { 'ufrc_rke2':
 
 See `examples/server.pp` and `examples/agent.pp` for fuller cluster/role configs.
 
+### Auto-deriving node-ip from an interface
+
+When `vm_iface` is set, the module reads that interface's IP from facts and injects
+it as `node-ip` in the rendered drop-in. Same for `mgmt_iface` → `node-external-ip`.
+Lets every host in a Foreman hostgroup share the same parameter set without
+per-host configuration:
+
+```puppet
+class { 'ufrc_rke2':
+  node_type  => 'server',
+  vm_iface   => 'ens224',   # high-speed cluster network NIC
+  mgmt_iface => 'ens192',   # management network NIC (optional)
+  config     => {
+    'cni'          => 'cilium',
+    'cluster-cidr' => '192.168.0.0/20',
+    # node-ip / node-external-ip are filled in from facts at apply time
+  },
+}
+```
+
+A `node-ip` (or `node-external-ip`) explicitly present in `config` wins over the
+derived value — escape hatch for hosts where the convention doesn't fit.
+
+If the named interface has no IP fact (interface missing, down at apply time),
+the run fails fast rather than silently producing a config with `node-ip: null`.
+
 ## How registration actually happens
 
 `bootstrap-cluster.sh` on the bastion fetches the Rancher registration command via

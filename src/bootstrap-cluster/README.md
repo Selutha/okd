@@ -58,6 +58,45 @@ By default, the script targets `pdsh -g rke2-<cluster>-<role>` (e.g.,
 - `-g <dshgroup>` — different dshgroup name
 - `-w <hostlist>` — explicit comma-separated host list
 
+## Pre-bootstrap manifests (Cilium)
+
+RKE2's bundled CNI charts are configured via a `HelmChartConfig` manifest dropped
+into `/var/lib/rancher/rke2/server/manifests/` *before* `rke2-server` starts the
+first time. For each cluster we keep a per-cluster copy in this directory:
+
+- `cilium-config-mgmt.yaml` — mgmt cluster
+- (future clusters add their own next to it)
+
+**Workflow per cluster build:**
+
+1. Copy the matching file to the **seed node only**, renamed to `rke2-cilium-config.yaml`:
+
+   ```bash
+   scp cilium-config-mgmt.yaml <seed>:/tmp/
+   ssh <seed> sudo install -m 0644 /tmp/cilium-config-mgmt.yaml \
+     /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
+   ```
+
+2. Run `bootstrap-cluster.sh <cluster> seed`.
+
+3. After the cluster is Active and Cilium is verified healthy, **delete the file**
+   from the seed node. The HelmChartConfig CR persists in etcd; day-2 changes go
+   via Rancher UI / `kubectl edit helmchartconfig -n kube-system rke2-cilium`.
+   The file in this repo stays as the historical "how the cluster started" record.
+
+   ```bash
+   ssh <seed> sudo rm /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
+   ```
+
+**Why only on the seed:** helm-controller is cluster-wide; one HelmChartConfig CR
+applies everywhere. Dropping the manifest on multiple servers risks racing
+overwrites if the files ever diverge. Seed-only is simpler.
+
+**Why delete after bootstrap:** the on-disk file is reconciled into the CR by
+RKE2's manifest deploy controller. If the file remains and someone later edits
+the CR via UI/kubectl, the next puppet/manual touch of the file would revert
+their change. Removing the file makes the live CR the unambiguous source of truth.
+
 ## Idempotency
 
 Re-running on already-registered hosts is safe. Rancher's system-agent-install

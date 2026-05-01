@@ -37,6 +37,13 @@ common cause of "registration ran but the cluster doesn't form."
       running (`systemctl is-active rke2-server rke2-agent` should both fail).
       If a service is already active, the node is already registered — STOP and
       investigate before attempting to register again.
+- [ ] On the **seed node only**, the per-cluster Cilium HelmChartConfig has been
+      copied to `/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml`
+      from the source-of-truth file in `bootstrap-cluster/cilium-config-<cluster>.yaml`.
+      This must exist before `rke2-server` first starts; otherwise default
+      Cilium values deploy and your overrides only land on next reconcile.
+      After the cluster is Active and stable, delete the file from the node
+      (the HelmChartConfig CR persists in etcd; day-2 changes go via UI/kubectl).
 
 ## Step 1 — Get the registration commands from Rancher UI
 

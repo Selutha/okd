@@ -18,10 +18,34 @@ class ufrc_rke2::config {
     mode   => '0755',
   }
 
+  # Derive node-ip / node-external-ip from interface facts when the corresponding
+  # iface parameter is set. User-supplied values in $config take precedence.
+  if $ufrc_rke2::vm_iface {
+    $vm_ip = $facts.dig('networking', 'interfaces', $ufrc_rke2::vm_iface, 'ip')
+    unless $vm_ip {
+      fail("ufrc_rke2: vm_iface '${ufrc_rke2::vm_iface}' has no IP — interface missing or down")
+    }
+    $with_vm = { 'node-ip' => $vm_ip }
+  } else {
+    $with_vm = {}
+  }
+
+  if $ufrc_rke2::mgmt_iface {
+    $mgmt_ip = $facts.dig('networking', 'interfaces', $ufrc_rke2::mgmt_iface, 'ip')
+    unless $mgmt_ip {
+      fail("ufrc_rke2: mgmt_iface '${ufrc_rke2::mgmt_iface}' has no IP")
+    }
+    $with_mgmt = $with_vm + { 'node-external-ip' => $mgmt_ip }
+  } else {
+    $with_mgmt = $with_vm
+  }
+
+  $effective_config = $with_mgmt + $ufrc_rke2::config
+
   file { "${config_dir}/00-puppet.yaml":
     ensure  => file,
     mode    => '0644',
-    content => to_yaml($ufrc_rke2::config),
+    content => to_yaml($effective_config),
     require => File[$config_dir],
   }
 
