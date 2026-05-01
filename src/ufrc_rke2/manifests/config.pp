@@ -21,7 +21,7 @@ class ufrc_rke2::config {
   file { "${config_dir}/00-puppet.yaml":
     ensure  => file,
     mode    => '0644',
-    content => stdlib::to_yaml($ufrc_rke2::config),
+    content => to_yaml($ufrc_rke2::config),
     require => File[$config_dir],
   }
 
@@ -29,7 +29,7 @@ class ufrc_rke2::config {
     file { '/etc/rancher/rke2/registries.yaml':
       ensure  => file,
       mode    => '0600',
-      content => stdlib::to_yaml({
+      content => to_yaml({
           'mirrors' => {
             'docker.io' => {
               'endpoint' => [$ufrc_rke2::harbor_url],

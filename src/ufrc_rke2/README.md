@@ -24,7 +24,7 @@ supports the right shape (binary install, drop-in config) but its config templat
 hardcoded to a small fixed set of keys (no `cni`, `disable-kube-proxy`, `profile: cis`),
 has a Ruby syntax bug in the template, and is unmaintained.
 
-This module's `config` parameter is a free-form hash rendered via `stdlib::to_yaml`,
+This module's `config` parameter is a free-form hash rendered via `to_yaml`,
 so any current or future RKE2 config key is supported without a module update.
 
 ## Usage

@@ -17,7 +17,7 @@ class ufrc_rke2::prereqs {
   file { '/etc/modules-load.d/rke2.conf':
     ensure  => file,
     mode    => '0644',
-    content => $kernel_modules.join("\n") + "\n",
+    content => "${kernel_modules.join("\n")}\n",
   }
 
   $kernel_modules.each |String $kernel_module| {
@@ -33,7 +33,7 @@ class ufrc_rke2::prereqs {
   file { '/etc/sysctl.d/99-rke2.conf':
     ensure  => file,
     mode    => '0644',
-    content => $sysctl_lines.join("\n") + "\n",
+    content => "${sysctl_lines.join("\n")}\n",
     notify  => Exec['rke2-sysctl-reload'],
   }
 
