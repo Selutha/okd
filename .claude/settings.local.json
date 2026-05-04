@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:docs.portworx.com)",
+      "WebFetch(domain:docs.qumulo.com)"
+    ]
+  }
+}

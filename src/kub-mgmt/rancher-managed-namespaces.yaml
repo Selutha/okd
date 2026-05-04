@@ -1,0 +1,159 @@
+# Pre-create every Rancher-managed namespace with PSA labels tuned per
+# what the workloads in that namespace actually need.
+#
+# Apply this once. Re-apply any time you enable another Rancher chart.
+#
+# Why this exists:
+#
+#   RKE2's `profile: cis` sets cluster-wide PSA enforcement to
+#   `restricted`. Every workload Rancher installs (Rancher core, Fleet,
+#   system-upgrade-controller, Monitoring, Logging) ships pods that
+#   don't satisfy `restricted`. Some are also too privileged for
+#   `baseline` — most notably anything that mounts hostPath volumes
+#   (system-upgrade-controller mounts /etc/ssl, /etc/pki,
+#   /etc/ca-certificates; node-exporter and FluentBit mount /proc,
+#   /sys, /var/log).
+#
+#   PSA levels are a strict ladder: privileged > baseline > restricted.
+#   We pick the lowest level that admits the workloads in each
+#   namespace. Cluster-wide `restricted` stays in effect everywhere
+#   that isn't called out below.
+#
+# Why we don't try to satisfy the upstream policy:
+#
+#   These are Rancher's management plane, not tenant workloads.
+#   Patching the charts to pass `restricted` (or `baseline` where it
+#   doesn't fit) means carrying a fork through every upgrade in
+#   exchange for a security boundary that doesn't protect anything
+#   real — these pods are already cluster-admin equivalents.
+#
+# Idempotency:
+#
+#   Applying this manifest before Rancher creates a namespace just
+#   creates an empty namespace with the right labels — Helm 3 does not
+#   take exclusive ownership of pre-existing namespaces, so the chart
+#   installs cleanly when the feature is enabled later. Applying it
+#   after Rancher has already created the namespace updates the labels
+#   in place; pods stuck pending admission start scheduling within
+#   seconds of the labels landing.
+#
+# Adding more:
+#
+#   If you enable another Rancher feature whose namespace isn't listed
+#   below, append another `---` doc with the right level. Known ones we
+#   skipped because we don't currently use them:
+#     - cattle-neuvector-system     (NeuVector security chart)
+#     - cattle-istio-system         (Service Mesh chart)
+#     - cattle-csp-adapter-system   (SUSE CSP adapter)
+#     - cattle-elemental-system     (Elemental OS management)
+#
+#   Skipped because they hold only CRDs (GitRepos, Bundles, Clusters),
+#   no pods, so PSA never evaluates them:
+#     - fleet-default
+#     - fleet-local
+#
+# kubectl apply -f src/kub-mgmt/rancher-managed-namespaces.yaml
+
+# ---------- privileged: workloads use hostPath ----------
+#
+# cattle-system runs system-upgrade-controller, which mounts
+# /etc/ssl, /etc/pki, /etc/ca-certificates from the host so its
+# upgrade Jobs trust the same CA bundle as the host. hostPath is
+# forbidden under baseline, so the whole namespace has to be
+# privileged.
+#
+# cattle-monitoring-system and cattle-logging-system aren't installed
+# yet, but the moment you enable them their DaemonSets (node-exporter
+# / FluentBit) mount /proc, /sys, /var/log. Pre-labeling here means
+# you don't get blindsided when you turn the feature on.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-system                          # Rancher + system-upgrade-controller
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-monitoring-system               # Rancher Monitoring (node-exporter mounts /proc, /sys)
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-logging-system                  # Rancher Logging (FluentBit mounts /var/log)
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+
+# ---------- baseline: no hostPath, but doesn't pass restricted ----------
+#
+# These workloads run as root, don't drop all capabilities, or skip
+# seccompProfile, but they don't mount hostPath. Baseline admits them
+# while still blocking the obvious privilege escalations.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-fleet-system                    # Fleet controller stack
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-fleet-local-system              # Fleet agent on the local cluster
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-impersonation-system            # auth impersonation, created on first login
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-resources-system                # rancher-backup operator
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest
