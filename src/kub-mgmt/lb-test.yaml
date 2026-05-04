@@ -1,0 +1,116 @@
+# Validation manifest for Cilium L2 announcements on the mgmt cluster.
+#
+# Apply AFTER:
+#   - cilium-helmchartconfig.yaml has been updated (l2announcements + rate limits)
+#   - cilium-l2-pools.yaml has been applied
+#
+# This nginx pod + LoadBalancer Service + NetworkPolicy proves the end-to-end loop:
+#
+#   1. Pool assigns 172.16.192.7 to the Service
+#   2. Cilium L2 leader announces ARP for 172.16.192.7 on ens192
+#   3. arping from another mgmt-network host gets a reply
+#   4. curl http://172.16.192.7/ returns the nginx welcome page
+#
+# Two cluster-policy gotchas this manifest deliberately accommodates — both
+# come from `profile: cis` and bite every external-facing service:
+#
+#   PSA restricted: nginx-unprivileged is used (not stock nginx) and the
+#     pod ships a compliant securityContext (runAsNonRoot, drop ALL caps,
+#     seccompProfile=RuntimeDefault, readOnlyRootFilesystem). Stock nginx
+#     would be rejected by PodSecurity Admission.
+#
+#   Default-deny ingress NetworkPolicy: RKE2's CIS profile applies a
+#     `default-network-policy` to every namespace at bootstrap (CIS 5.3.2)
+#     that denies ingress from outside the namespace. We need to ship a
+#     NetworkPolicy explicitly allowing ingress to the lb-test pod, or
+#     external traffic gets dropped at the destination pod's eBPF program
+#     with "Policy denied" — visible only in `cilium-dbg monitor`.
+#
+# DELETE THIS MANIFEST AFTER VALIDATION:
+#
+#   kubectl delete -f src/kub-mgmt/lb-test.yaml
+#
+# This file lives in the repo for future re-runs (rebuilds, smoke-tests after
+# upgrades) — it is not declared steady-state.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lb-test
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lb-test
+  template:
+    metadata:
+      labels:
+        app: lb-test
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lb-test
+  namespace: default
+  labels:
+    lb-pool: mgmt
+  annotations:
+    lbipam.cilium.io/ips: "172.16.192.7"
+spec:
+  type: LoadBalancer
+  selector:
+    app: lb-test
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# Required because RKE2 `profile: cis` applies a default-deny ingress
+# NetworkPolicy to every namespace at bootstrap (CIS 5.3.2). Without this
+# explicit allow, traffic from `world` (external) hits the lb-test pod's
+# eBPF program and gets dropped with "Policy denied" — silently, except in
+# `cilium-dbg monitor`. Every externally-exposed Service needs a similar
+# NetworkPolicy alongside it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lb-test-allow-external
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: lb-test
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}    # allow from any source, all ports — appropriate for a smoke test only

@@ -1,0 +1,74 @@
+# CloudNativePG Cluster CR: Postgres backing Keycloak.
+#
+# 3 instances (1 primary + 2 replicas), with automatic failover. Storage
+# from Pure Storage CSI per project memory.
+#
+# Apply AFTER:
+#   - cnpg-operator-helmchart.yaml is applied and CNPG operator is Ready
+#   - keycloak-namespace.yaml is applied
+#
+# Bootstrap creates a `keycloak` database owned by user `keycloak`. The
+# generated password is stored in Secret `keycloak-pg-app` (name +
+# password keys), which the Keycloak CR references.
+#
+# Apply:
+#   kubectl apply -f src/kub-mgmt/keycloak-postgres.yaml
+#
+# Watch:
+#   kubectl -n keycloak get cluster keycloak-pg -w
+#   kubectl -n keycloak get pods -l cnpg.io/cluster=keycloak-pg
+#
+# Verify:
+#   kubectl -n keycloak get cluster keycloak-pg
+#   # Expect: STATUS=Cluster in healthy state
+#   kubectl -n keycloak get secret keycloak-pg-app
+#   # Expect: type=Opaque, contains username/password keys
+
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: keycloak-pg
+  namespace: keycloak
+spec:
+  instances: 3
+
+  # Pin Postgres version. Check Keycloak's supported Postgres versions
+  # for the Keycloak release you're using.
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.6
+
+  storage:
+    size: 20Gi
+    # Use the Pure Storage CSI StorageClass. Confirm the actual class
+    # name on this cluster:
+    #   kubectl get storageclass
+    storageClassName: pure-block       # ← UPDATE if different
+
+  # Anti-affinity ensures 3 replicas land on 3 different nodes.
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+
+  # Bootstrap: creates the keycloak database + user on first cluster init.
+  bootstrap:
+    initdb:
+      database: keycloak
+      owner: keycloak
+
+  # Resource hints — Keycloak's Postgres workload is light at idle,
+  # spikes during heavy auth traffic. These are conservative.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+  # CNPG creates a Service `keycloak-pg-rw` for read-write (primary) and
+  # `keycloak-pg-ro` for read-only (replicas). Keycloak should connect
+  # to the -rw service.
+
+  # Backups can be added later — for now, etcd snapshots cover cluster-
+  # level recovery and Keycloak's realm config can be re-imported. When
+  # the user-facing data matters (federated identity-provider links,
+  # etc.), set up Barman backups to S3.

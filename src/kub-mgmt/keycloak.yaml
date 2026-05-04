@@ -1,0 +1,83 @@
+# Keycloak instance CR — managed by the Keycloak Operator.
+#
+# Apply AFTER:
+#   - keycloak-namespace.yaml
+#   - keycloak-postgres.yaml (Postgres Cluster Ready)
+#   - Keycloak Operator installed (see keycloak-operator-install.md)
+#
+# 3 replicas across the 5-node cluster with anti-affinity. Backed by
+# the CNPG-managed Postgres at keycloak-pg-rw.keycloak.svc.
+#
+# TLS terminates upstream at the Cilium Gateway with the wildcard cert,
+# so Keycloak runs HTTP-only inside the cluster. The proxy.headers
+# config tells Keycloak to honor X-Forwarded-* headers from the Gateway
+# (so it knows to construct OIDC tokens with https:// URLs even though
+# it's running plain HTTP).
+#
+# Apply:
+#   kubectl apply -f src/kub-mgmt/keycloak.yaml
+#
+# Watch:
+#   kubectl -n keycloak get keycloak keycloak -w
+#   kubectl -n keycloak get pods -l app=keycloak
+#
+# Verify (port-forward initially since the Gateway HTTPRoute isn't applied yet):
+#   kubectl -n keycloak port-forward svc/keycloak-service 8080:8080
+#   curl -v http://localhost:8080/realms/master
+#   # Expect: 200 with Keycloak metadata JSON
+
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  instances: 3
+
+  hostname:
+    hostname: keycloak.rc.ufl.edu
+    # Strict false because the Gateway terminates TLS — Keycloak doesn't
+    # see HTTPS itself, but generates URLs as HTTPS (correct external view).
+    strict: false
+    # Use dynamic backchannel for OIDC clients in-cluster reaching
+    # Keycloak — they hit the cluster-internal Service URL, not the
+    # public hostname. Avoids cert and DNS roundtrips.
+    backchannelDynamic: true
+
+  http:
+    httpEnabled: true              # Gateway terminates TLS; Keycloak HTTP only
+
+  proxy:
+    headers: xforwarded            # honor X-Forwarded-* from the Gateway
+
+  db:
+    vendor: postgres
+    host: keycloak-pg-rw.keycloak.svc
+    database: keycloak
+    usernameSecret:
+      name: keycloak-pg-app        # Secret created by CNPG bootstrap
+      key: username
+    passwordSecret:
+      name: keycloak-pg-app
+      key: password
+
+  # Anti-affinity across nodes
+  scheduling:
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: keycloak
+              topologyKey: kubernetes.io/hostname
+
+  # Resource hints — Keycloak is JVM-based, idle is ~512Mi but auth
+  # spikes can push higher. These are starting points; observe and tune.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi

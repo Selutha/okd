@@ -1,0 +1,56 @@
+# HTTPRoute attaching Rancher to the gateway-system Gateway, plus the
+# NetworkPolicy that allows the routed traffic into the Rancher pods.
+#
+# Apply AFTER:
+#   - gateway.yaml is applied and Programmed=True
+#   - rancher-helmchart.yaml has been applied AND helm-install Job has
+#     completed (so the rancher Service and Deployment exist)
+#
+# Sequence:
+#
+#   kubectl apply -f src/kub-mgmt/rancher-helmchart.yaml
+#   kubectl -n kube-system get job -l owner=helm,name=rancher -w   # wait COMPLETIONS=1/1
+#   kubectl -n cattle-system rollout status deploy/rancher --timeout=10m
+#   kubectl apply -f src/kub-mgmt/rancher-route-policy.yaml
+#   curl -v https://rancher.rc.ufl.edu/   # should redirect to /dashboard/
+
+---
+# HTTPRoute in cattle-system attaching to the Gateway in gateway-system.
+# Cross-namespace attachment works because the Gateway's
+# allowedRoutes.namespaces.from=All — no ReferenceGrant needed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rancher
+  namespace: cattle-system
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway-system
+      sectionName: https           # the listener name in gateway.yaml
+  hostnames:
+    - rancher.rc.ufl.edu
+  rules:
+    - backendRefs:
+        - name: rancher
+          port: 80                 # Rancher Service port (tls=external → HTTP)
+
+---
+# Required because RKE2 `profile: cis` applies a default-deny ingress
+# NetworkPolicy to every namespace at bootstrap. Without this, traffic
+# from `world` arriving at Rancher pods (via Cilium's embedded Envoy
+# preserving source identity) is silently dropped with "Policy denied".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rancher-allow-ingress
+  namespace: cattle-system
+spec:
+  podSelector:
+    matchLabels:
+      app: rancher
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}    # allow from world; access controlled at the perimeter
+            # (Kemp WAF for external, network ACLs for internal)

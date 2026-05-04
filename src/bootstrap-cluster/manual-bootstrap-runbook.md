@@ -39,11 +39,12 @@ common cause of "registration ran but the cluster doesn't form."
       investigate before attempting to register again.
 - [ ] On the **seed node only**, the per-cluster Cilium HelmChartConfig has been
       copied to `/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml`
-      from the source-of-truth file in `bootstrap-cluster/cilium-config-<cluster>.yaml`.
+      from the source-of-truth file in `src/<cluster>/cilium-helmchartconfig.yaml`.
       This must exist before `rke2-server` first starts; otherwise default
       Cilium values deploy and your overrides only land on next reconcile.
       After the cluster is Active and stable, delete the file from the node
-      (the HelmChartConfig CR persists in etcd; day-2 changes go via UI/kubectl).
+      (the HelmChartConfig CR persists in etcd; day-2 changes go via repo edit
+      + `kubectl apply -f`, not `kubectl edit`).
 
 ## Step 1 — Get the registration commands from Rancher UI
 

@@ -1,0 +1,63 @@
+# Cilium Gateway for the mgmt cluster — single shared HTTPS listener that
+# all browser-facing services hang off via HTTPRoute.
+#
+# How it fits into the architecture:
+#
+#   client (DNS *.rc.ufl.edu → 172.16.192.9) → ARP via mgmt-pool L2
+#     announcement on ens192 → leader node → Cilium-embedded Envoy
+#     terminates TLS with wildcard cert → SNI/Host-based HTTPRoute
+#     dispatch → backend pod (potentially via VXLAN to a different node)
+#
+# Cilium 1.16+ Gateway API uses **embedded Envoy in the cilium-agent**
+# (no separate gateway-pods Deployment). So:
+#   - No additional NetworkPolicy is needed in gateway-system for the
+#     Gateway "pods" themselves — the agent in kube-system handles it.
+#   - Each backend pod's namespace still needs its own NetworkPolicy
+#     allowing the appropriate ingress (typically from `world`, since
+#     source identity propagates through the L7 proxy).
+#
+# Adding new services to this Gateway:
+#   1. Add DNS A record for the new hostname → 172.16.192.9 (InfoBlox
+#      internal zone; also external if customer-facing via Kemp)
+#   2. Add an HTTPRoute (in any namespace) with parentRefs pointing at
+#      this Gateway, hostnames matching the new FQDN
+#   3. Add a NetworkPolicy in the backend namespace allowing ingress
+#      from `world` (or tighter, from the gateway-system if propagation
+#      is configured to attribute traffic that way)
+#
+# DNS already in place (InfoBlox internal zone):
+#   rancher.rc.ufl.edu  →  172.16.192.9
+#
+# Future hostnames (add when their HTTPRoute is created):
+#   grafana.rc.ufl.edu   prometheus.rc.ufl.edu   argocd.rc.ufl.edu  etc.
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main
+  namespace: gateway-system
+spec:
+  gatewayClassName: cilium
+  # Cilium reads infrastructure.annotations / labels and applies them to
+  # the underlying Service it creates for this Gateway. This is how the
+  # Gateway gets a specific LB IP from mgmt-pool.
+  infrastructure:
+    annotations:
+      lbipam.cilium.io/ips: "172.16.192.9"
+    labels:
+      lb-pool: mgmt
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "*.rc.ufl.edu"     # SNI scope; HTTPRoute hostnames must
+                                   # be subdomains of this
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: wildcard-rc-ufl-edu
+      allowedRoutes:
+        namespaces:
+          from: All                # any namespace can attach HTTPRoutes
+                                   # tighten later if needed

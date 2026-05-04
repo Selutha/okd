@@ -1,0 +1,43 @@
+# CloudNativePG (CNPG) operator install via RKE2's helm-controller.
+#
+# CNPG is the Postgres operator we use for in-cluster Postgres clusters.
+# Keycloak's database backend is its first consumer. Future tenants:
+# anything else needing Postgres in the cluster (Grafana state DB, etc.).
+#
+# Apply:
+#   kubectl apply -f src/kub-mgmt/cnpg-operator-helmchart.yaml
+#
+# Watch:
+#   kubectl -n kube-system get job -l owner=helm,name=cnpg-operator -w
+#   kubectl -n cnpg-system rollout status deploy/cnpg-cloudnative-pg --timeout=5m
+#
+# Verify:
+#   kubectl -n cnpg-system get pods
+#   kubectl get crd | grep cnpg
+
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: cnpg-operator
+  namespace: kube-system
+spec:
+  chart: cloudnative-pg
+  repo: https://cloudnative-pg.io/charts
+  # Pin to the version that supports your K8s. Check the support matrix:
+  # https://cloudnative-pg.io/documentation/current/supported_releases/
+  # Currently expected: chart 0.23.x maps to CNPG 1.24.x.
+  version: "0.23.0"             # ← UPDATE before applying
+  targetNamespace: cnpg-system
+  createNamespace: true
+
+  valuesContent: |-
+    # Single operator pod — CNPG's design is one operator manages many
+    # Postgres clusters. HA is at the Postgres-cluster level (3 replicas
+    # per Cluster CR), not the operator level.
+    replicaCount: 1
+
+    # No Prometheus yet — turn this on later when monitoring stack lands.
+    monitoring:
+      podMonitorEnabled: false
+      grafanaDashboard:
+        create: false

@@ -1,0 +1,120 @@
+# Cilium HelmChartConfig for the mgmt cluster (kub-mgmt).
+#
+# This file is the source of truth for the mgmt cluster's Cilium values.
+# It serves two roles:
+#
+# 1. BOOTSTRAP — at first-boot, copy this to the seed node at
+#    /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml.
+#    RKE2's helm-controller picks it up on rke2-server first start and
+#    merges these values with the bundled rke2-cilium chart. See
+#    context/bootstrap.md for the full procedure.
+#
+# 2. DAY-2 — after the cluster is healthy, the file on the seed node is
+#    deleted; etcd retains the HelmChartConfig CR. From this point,
+#    changes to Cilium values are made by editing this file in the repo
+#    and applying with:
+#
+#      kubectl apply -f src/kub-mgmt/cilium-helmchartconfig.yaml
+#
+#    Apply BEFORE committing to git, so the repo never shows state that
+#    didn't actually take effect.
+#
+# Underlay MTU is 9000 on ens224 (verified). Pod MTU = 9000 - 50 byte VXLAN overhead.
+# CIDR scheme is per cidr-plan.md (192.168.0.0/16 sliced into /20 pairs).
+#
+# ----- Gateway API -----
+# Enabled. Cilium acts as the in-cluster ingress (no Traefik, no
+# rke2-ingress-nginx, no Kemp L7). Internal traffic resolves directly to the
+# Cilium-managed gateway; external traffic that needs WAF can be relayed via Kemp
+# L4 passthrough (a separate VIP per service, deferred — see kemp-vip-design.md).
+#
+# REQUIRED before Gateway API takes effect: install ALL FIVE upstream standard
+# Gateway API CRDs (Cilium 1.19's operator hard-requires all of them; missing
+# any one causes the Gateway API controller to silently not start). Then bounce
+# the cilium-operator pods so they re-evaluate CRD availability — see
+# context/bootstrap.md Phase 5a.
+#
+#   for crd in gatewayclasses gateways httproutes grpcroutes referencegrants; do
+#     kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_${crd}.yaml
+#   done
+#
+# TLSRoute (experimental) is intentionally NOT installed on mgmt cluster. It's
+# needed only on workload clusters with external L4/TLS passthrough through Kemp
+# (e.g., GPU cluster's external lane). Install it as part of those clusters'
+# bootstrap, not this one.
+#
+# ----- L2 Announcements -----
+# Enabled. Provides LoadBalancer-type Service IPs to the cluster without an
+# external load balancer (no MetalLB). LoadBalancer IPs are drawn from
+# CiliumLoadBalancerIPPool resources (see cilium-l2-pools.yaml) and announced
+# via ARP on the configured interface (ens192 for mgmt-pool, ens224 for vm-pool).
+#
+# k8sClientRateLimit is bumped: leader-election leases for L2 announcement
+# generate enough Kubernetes API churn that the default qps/burst (5/10) gets
+# throttled, causing flappy leases and intermittent ARP failover. 50/100 is
+# Cilium's documented recommendation for clusters running L2 announcements.
+#
+# ----- Hubble -----
+# Enabled. Hubble is Cilium's network observability layer:
+#   - hubble (server-side): runs in-process inside the cilium-agent on each
+#     node, captures flow data
+#   - hubble-relay: cluster-wide aggregation of flow data into a single API
+#   - hubble-ui: web frontend showing service map + flows + drops
+#
+# Critical for diagnosing NetworkPolicy drops (see service-vip-and-naming.md
+# and the lb-test smoke-test debugging story — would have been a one-click
+# diagnosis with Hubble UI instead of multi-node cilium-dbg monitor digging).
+#
+# Hubble UI is NOT exposed externally yet — access is via:
+#   kubectl port-forward -n kube-system svc/hubble-ui 12000:80
+#   open http://localhost:12000
+#
+# When Keycloak / SSO is in place, expose via Cilium Gateway + HTTPRoute at
+# hubble.rc.ufl.edu fronted by oauth2-proxy. Tracked in fix-later.md.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-cilium
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    routingMode: tunnel
+    tunnelProtocol: vxlan
+
+    ipam:
+      mode: cluster-pool
+      operator:
+        clusterPoolIPv4PodCIDRList:
+          - 192.168.0.0/20
+        clusterPoolIPv4MaskSize: 25
+
+    mtu: 8950
+
+    kubeProxyReplacement: true
+    k8sServiceHost: vkub-mgmt.ufhpc
+    k8sServicePort: 6443
+
+    gatewayAPI:
+      enabled: true
+
+    l2announcements:
+      enabled: true
+
+    k8sClientRateLimit:
+      qps: 50
+      burst: 100
+
+    hubble:
+      enabled: true
+      metrics:
+        enabled:
+          - dns
+          - drop
+          - tcp
+          - flow
+          - icmp
+          - http
+      relay:
+        enabled: true
+      ui:
+        enabled: true

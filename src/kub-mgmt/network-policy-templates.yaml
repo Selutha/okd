@@ -1,0 +1,273 @@
+# NetworkPolicy templates — copy-paste shapes for common ingress/egress patterns.
+#
+# Why this file exists: RKE2's `profile: cis` applies a default-deny ingress
+# NetworkPolicy (`default-network-policy`) to every namespace at cluster
+# bootstrap (CIS Benchmark 5.3.2). Every Service exposed beyond its namespace
+# needs an explicit NetworkPolicy alongside it, or traffic is silently dropped
+# at the destination pod's eBPF program with "Policy denied" — visible only
+# in cilium-dbg monitor (or Hubble, if enabled).
+#
+# This file is NOT meant to be `kubectl apply`'d as-is. It's a catalog of
+# shapes. Copy a block, customize the namespace / podSelector / source / port,
+# and ship it alongside the Deployment/Service it protects.
+#
+# Cilium "default" policy enforcement (which we have) means: when MULTIPLE
+# policies apply to a pod, the result is the UNION of allows. So adding an
+# allow-policy on top of `default-network-policy` opens that specific pod
+# without weakening cluster-wide defaults.
+#
+# Templates below, in order of likelihood you'll need them:
+#
+#   1. Allow ingress from world (external) — for anything fronting `world`
+#      (LoadBalancer, NodePort, raw external)
+#   2. Allow ingress from Cilium Gateway pods — for HTTP services fronted
+#      by a Cilium Gateway listener
+#   3. Allow ingress from a specific namespace — cross-namespace consumer
+#   4. Allow ingress from a specific CIDR — campus subnet, VPN range, etc.
+#   5. Allow ingress on specific ports only — minimum-privilege variant
+#   6. Restrictive egress — when default-allow-egress isn't acceptable
+#   7. CiliumNetworkPolicy with identity-based source — Cilium-native form
+#
+# All templates assume the target pod has `app: <name>` label. Adjust to
+# match your actual deployment labels.
+
+---
+# 1. Allow ingress from world (external).
+#    Use when: a LoadBalancer/NodePort Service is reachable from outside
+#    the cluster and the destination pod must accept that traffic.
+#    Example use case: Cilium Gateway listener pod, public-facing nginx.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: TEMPLATE-allow-world-ingress
+  namespace: TEMPLATE-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}    # match-all source. Equivalent to "allow from world".
+            # Cilium will see source identity = `world` for external clients
+            # and `cluster` for in-cluster sources, both allowed.
+
+---
+# 2. Allow ingress from Cilium Gateway pods.
+#    Use when: a normal application pod is fronted by a Cilium Gateway +
+#    HTTPRoute. The application doesn't see `world` directly — it sees
+#    traffic from the Gateway's pods. Locking ingress to just the Gateway
+#    is much tighter than `allow from world`.
+#
+#    The Cilium Gateway runs pods labeled with
+#    `gateway.networking.k8s.io/gateway-name=<gateway-name>`.
+#    Adjust the gateway-name to match your Gateway resource.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: TEMPLATE-allow-from-gateway
+  namespace: TEMPLATE-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}    # any namespace (Cilium GW lives in cilium-managed ns)
+          podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: TEMPLATE-gateway-name
+      ports:
+        - protocol: TCP
+          port: 8080      # whatever port the app actually listens on
+
+---
+# 3. Allow ingress from a specific namespace.
+#    Use when: a service in namespace `ns-a` is consumed by pods in `ns-b`,
+#    and you want to allow `ns-b` (and only `ns-b`) to reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: TEMPLATE-allow-from-namespace
+  namespace: TEMPLATE-target-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: TEMPLATE-source-namespace
+              # `kubernetes.io/metadata.name` is auto-applied to every
+              # namespace by the K8s namespace controller, value = ns name.
+
+---
+# 4. Allow ingress from a specific CIDR.
+#    Use when: a service is reachable only from a known network range
+#    (campus subnet, VPN range, partner network). Tighter than `allow from
+#    world` for services that don't need full internet exposure.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: TEMPLATE-allow-from-cidr
+  namespace: TEMPLATE-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 172.16.192.0/20    # mgmt network — adjust as needed
+        - ipBlock:
+            cidr: 10.13.160.0/20     # VM network
+            except:
+              - 10.13.160.5/32       # exclude a specific host inside the cidr
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# 5. Allow ingress on specific ports only.
+#    Use when: a pod listens on multiple ports (e.g., 8080 for app, 9090
+#    for metrics) and only some should be reachable from a given source.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: TEMPLATE-allow-app-port-only
+  namespace: TEMPLATE-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  policyTypes:
+    - Ingress
+  ingress:
+    - from: []      # any source, but limited to specific port
+      ports:
+        - protocol: TCP
+          port: 8080
+      # NOTE: omitting 9090 means metrics port stays denied (default-deny
+      # at the namespace level). If you also want Prometheus to scrape,
+      # add a separate ingress rule narrowed to the prometheus pods.
+
+---
+# 6. Restrictive egress — only allow specific destinations.
+#    Use when: a sensitive pod (e.g., a service handling secrets) should
+#    only be allowed to talk to specific destinations, not the whole
+#    cluster + internet. NOTE: by default, default-network-policy does NOT
+#    restrict egress on the mgmt cluster — pods can talk to anywhere.
+#    Add this only if you want explicit egress restriction.
+#
+#    With `policyTypes: [Egress]` set, ALL egress is denied by default
+#    except what's explicitly allowed below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: TEMPLATE-restrictive-egress
+  namespace: TEMPLATE-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS to kube-dns (almost always needed)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow K8s API access (often needed for in-cluster apps)
+    - to:
+        - ipBlock:
+            cidr: 172.16.192.6/32    # vkub-mgmt.ufhpc API VIP
+      ports:
+        - protocol: TCP
+          port: 6443
+    # Allow specific external dependency (e.g., Vault PKI when it lands)
+    - to:
+        - ipBlock:
+            cidr: 10.13.160.50/32    # placeholder — Vault VIP
+      ports:
+        - protocol: TCP
+          port: 8200
+
+---
+# 7. CiliumNetworkPolicy — same intent, but using Cilium's native CRD with
+#    identity-based selectors (sometimes more expressive than K8s NetworkPolicy).
+#    Use when: you want to match by Cilium identity (security identity), use
+#    L7 rules (HTTP method/path), or use FQDN-based egress.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: TEMPLATE-cilium-policy
+  namespace: TEMPLATE-namespace
+spec:
+  endpointSelector:
+    matchLabels:
+      app: TEMPLATE-app-name
+  ingress:
+    # Allow from any pod in the same namespace
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: TEMPLATE-namespace
+    # Allow from a specific labeled set (e.g., gateway pods)
+    - fromEndpoints:
+        - matchLabels:
+            gateway.networking.k8s.io/gateway-name: TEMPLATE-gateway-name
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow from "world" (external traffic) — Cilium's special identity
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  # Egress: optional. Omit if default-allow-egress is fine.
+  # egress:
+  #   - toFQDNs:
+  #       - matchName: "vault.rc.ufl.edu"
+  #     toPorts:
+  #       - ports:
+  #           - port: "8200"
+  #             protocol: TCP
+
+# ------------------------------------------------------------------
+# Quick reference: how `default-network-policy` interacts with these
+# ------------------------------------------------------------------
+#
+# `default-network-policy` (CIS-applied at namespace creation) allows:
+#   - Ingress from same-namespace pods
+#   - Ingress from the host (kubelet probes, etc.)
+#
+# When you ADD any policy from this catalog targeting a specific pod,
+# Cilium UNIONs the allows. The pod gets:
+#   - default-network-policy's same-namespace + host ingress (still allowed)
+#   - PLUS whatever your additional policy allows
+#
+# So you don't need to "include same-namespace ingress" in your custom
+# policy — it's already there. Only add the extra dimensions (world,
+# specific external CIDR, specific gateway pods, etc.) that the default
+# doesn't cover.
+#
+# Egress is NOT restricted by default-network-policy — pods can egress
+# anywhere. Only add an Egress policy if you want explicit restriction.

@@ -1,0 +1,29 @@
+# Pre-create the keycloak namespace with PSA labels.
+#
+# Apply BEFORE the Postgres Cluster CR or the Keycloak CR.
+#
+# Why PSA `baseline` (not `restricted`):
+#   Modern Keycloak images run as non-root with proper securityContext
+#   and would likely satisfy `restricted`. CNPG-managed Postgres pods
+#   should also satisfy `restricted`. We start with `baseline` to avoid
+#   the same painful debug cycle we hit with cattle-system — Rancher
+#   pods got admission-rejected, install hung, recovery took hours.
+#
+#   Once Keycloak + CNPG are running successfully, you CAN tighten this
+#   to `restricted` if no pods get rejected. To check: tail PSA audit
+#   warnings:
+#     kubectl get events -n keycloak --field-selector reason=FailedCreate
+#
+# kubectl apply -f src/kub-mgmt/keycloak-namespace.yaml
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keycloak
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest

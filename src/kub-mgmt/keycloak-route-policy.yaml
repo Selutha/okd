@@ -1,0 +1,55 @@
+# HTTPRoute + NetworkPolicy for Keycloak.
+#
+# Apply AFTER:
+#   - Keycloak Operator + Keycloak CR are deployed (so keycloak-service
+#     exists in the keycloak namespace)
+#   - DNS keycloak.rc.ufl.edu → 172.16.192.9 is in InfoBlox internal zone
+#
+# The HTTPRoute attaches to the gateway-system Gateway (from gateway.yaml).
+# Cross-namespace attachment works because the Gateway's
+# allowedRoutes.namespaces.from=All — no ReferenceGrant needed.
+#
+# Apply:
+#   kubectl apply -f src/kub-mgmt/keycloak-route-policy.yaml
+#
+# Verify:
+#   kubectl -n keycloak get httproute keycloak
+#   # Look for Status.Parents[0].Conditions: Accepted=True, ResolvedRefs=True
+#   curl -v https://keycloak.rc.ufl.edu/realms/master 2>&1 | head -30
+#   # Expect: 200 OK with valid TLS cert
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - keycloak.rc.ufl.edu
+  rules:
+    - backendRefs:
+        - name: keycloak-service     # Service created by Keycloak Operator
+          port: 8080
+
+---
+# Default-deny ingress in keycloak namespace (CIS 5.3.2 default-network-policy)
+# blocks traffic from world. Allow ingress from `world` for Keycloak — it's
+# user-facing for the auth flow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-allow-ingress
+  namespace: keycloak
+spec:
+  podSelector:
+    matchLabels:
+      app: keycloak                  # Keycloak Operator labels its pods app=keycloak
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}    # allow from world; access controlled by Keycloak's own auth flows

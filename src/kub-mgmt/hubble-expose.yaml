@@ -1,0 +1,62 @@
+# Expose Hubble UI on a LoadBalancer IP from mgmt-pool.
+#
+# This is a *sibling* Service to the one Cilium's chart creates. The
+# chart-managed `hubble-ui` Service stays ClusterIP; this `hubble-ui-lb`
+# Service selects the same pods and gets a routable IP.
+#
+# Why a sibling Service instead of overriding chart values: keeps the
+# expose-policy decoupled from the chart values. Easier to swap when we
+# eventually move Hubble UI behind a Cilium Gateway + HTTPRoute + SSO
+# (just delete this file's Service and add the HTTPRoute).
+#
+# Currently UNAUTHENTICATED. Internal DNS + network ACLs are the only
+# access gates until Keycloak SSO is in place. Tracked in fix-later.md.
+#
+# DNS to add (internal BIND / InfoBlox internal zone only — never expose
+# externally):
+#
+#   hubble.rc.ufl.edu  A  172.16.192.8
+#
+# Verify after apply:
+#   kubectl get svc hubble-ui-lb -n kube-system
+#   curl -I http://172.16.192.8/        # expect 200 from the UI
+#   open http://hubble.rc.ufl.edu/      # once DNS is in place
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubble-ui-lb
+  namespace: kube-system
+  labels:
+    lb-pool: mgmt
+    k8s-app: hubble-ui
+  annotations:
+    lbipam.cilium.io/ips: "172.16.192.8"
+spec:
+  type: LoadBalancer
+  selector:
+    k8s-app: hubble-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8081     # hubble-ui frontend container port (Cilium 1.19 default)
+      protocol: TCP
+---
+# Required because RKE2 `profile: cis` applies a default-deny ingress
+# NetworkPolicy to every namespace at bootstrap (CIS 5.3.2), kube-system
+# included. Without this, traffic from `world` to hubble-ui is silently
+# dropped at the pod's eBPF program with "Policy denied".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hubble-ui-allow-ingress
+  namespace: kube-system
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: hubble-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}    # allow from world; appropriate while internal-only and
+            # gated by network ACLs. Tighten when Keycloak/SSO lands.

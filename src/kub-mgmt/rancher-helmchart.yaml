@@ -1,0 +1,99 @@
+# Rancher install via RKE2's helm-controller (HelmChart CR pattern).
+#
+# No `helm` CLI needed — this is the same mechanism RKE2 uses for its
+# bundled charts (rke2-cilium, rke2-coredns, etc.). Apply this manifest
+# and helm-controller spins up a Job that runs `helm install rancher`
+# with the values below.
+#
+# Apply order:
+#
+#   # 1. Pick a Rancher version that supports K8s 1.35.
+#   #    https://www.suse.com/suse-rancher/support-matrix/
+#   #    Edit `spec.version` below to that version.
+#   #
+#   # 2. Apply
+#   kubectl apply -f src/kub-mgmt/rancher-helmchart.yaml
+#
+#   # 3. Watch the helm-install Job in kube-system
+#   kubectl -n kube-system get job -l owner=helm,name=rancher -w
+#   # When COMPLETIONS = 1/1, helm install finished.
+#
+#   # 4. Watch Rancher pods come up in cattle-system
+#   kubectl -n cattle-system rollout status deploy/rancher --timeout=10m
+#   kubectl -n cattle-system get pods
+#   # Expect: 3 rancher pods Running, 1 rancher-webhook pod Running.
+#
+#   # 5. Apply the route + policy (creates the HTTPRoute and NetworkPolicy)
+#   kubectl apply -f src/kub-mgmt/rancher-route-policy.yaml
+#
+#   # 6. Retrieve the auto-generated bootstrap password
+#   kubectl -n cattle-system get secret bootstrap-secret \
+#     -o jsonpath='{.data.bootstrapPassword}' | base64 -d ; echo
+#
+#   # 7. Browse to https://rancher.rc.ufl.edu/ and complete bootstrap
+
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rancher
+  namespace: kube-system          # helm-controller scope
+spec:
+  chart: rancher
+  repo: https://releases.rancher.com/server-charts/stable
+  # PIN this to a specific Rancher version. Don't leave blank — the
+  # latest gets installed which can be a surprise upgrade later.
+  # Check the support matrix for the version that supports K8s 1.35.
+  version: "2.14.1"
+  targetNamespace: cattle-system
+  createNamespace: true
+
+  valuesContent: |-
+    # Hostname Rancher serves itself at. Must match the HTTPRoute
+    # hostname and the DNS record pointing at the Cilium Gateway LB IP.
+    hostname: rancher.rc.ufl.edu
+
+    # Disable Rancher's bundled Ingress controller — we use Cilium
+    # Gateway API instead, with the wildcard cert terminated upstream
+    # at the Gateway listener.
+    ingress:
+      enabled: false
+
+    # TLS terminated upstream at the Cilium Gateway. Rancher itself
+    # runs plain HTTP on port 80 internally.
+    tls: external
+
+    # 3 replicas across the 5-node cluster with anti-affinity = each
+    # replica on a different node. Tolerates 1 node loss without losing
+    # Rancher capacity; tolerates 2 with degraded performance.
+    replicas: 3
+    antiAffinity: required
+
+    # Modest audit logging — captures admin actions but not every
+    # request. Bump to 2 or 3 if you need more granular audit.
+    auditLog:
+      level: 1
+
+    # Resource hints — Rancher itself isn't memory-hungry but spikes
+    # during cluster import/upgrade operations.
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 4Gi
+
+    # Wildcard cert is from a public CA, no extra root distribution
+    # needed for clients.
+    privateCA: false
+
+    # Don't install or manage cert-manager — we have no cert-manager
+    # on this cluster (Phase 1 plan). Rancher's chart only touches
+    # cert-manager when tls=ingress or tls=letsEncrypt.
+
+    # bootstrapPassword: NOT set here. Rancher auto-generates one and
+    # stores it in cattle-system/bootstrap-secret. Retrieved with:
+    #   kubectl -n cattle-system get secret bootstrap-secret \
+    #     -o jsonpath='{.data.bootstrapPassword}' | base64 -d
+    # If you want to set a known password, add it here, but be aware
+    # this manifest gets committed to the repo — passwords in repo
+    # is a thing to think hard about.

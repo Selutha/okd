@@ -1,0 +1,41 @@
+# Pre-create the cattle-system namespace with PSA enforcement at `baseline`.
+#
+# Apply BEFORE rancher-helmchart.yaml.
+#
+# Why this exists:
+#
+#   RKE2's `profile: cis` sets cluster-wide PSA enforcement to `restricted`.
+#   Rancher's Helm chart ships pods that don't satisfy `restricted` (the
+#   rancher container doesn't set runAsNonRoot, capabilities.drop=ALL,
+#   seccompProfile, etc.). The Deployment + ReplicaSet land OK, but the
+#   ReplicaSet controller can't create pods — admission rejects them with
+#   `violates PodSecurity "restricted:latest"`.
+#
+#   Per Rancher's docs and the broader Rancher-on-PSA community pattern,
+#   relaxing cattle-system to `baseline` is the standard workaround.
+#   `baseline` allows the privileges Rancher actually needs without
+#   going to `privileged`. Cluster-wide `restricted` stays in effect for
+#   every other namespace.
+#
+# This applies idempotently. If the HelmChart already created the
+# namespace (with default labels), this manifest updates the labels in
+# place — pods that were stuck creating will start scheduling within
+# seconds of the labels landing.
+#
+# kubectl apply -f src/kub-mgmt/cattle-system-namespace.yaml
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-system
+  labels:
+    # Three PSA "modes": enforce (block), audit (log), warn (warn).
+    # Setting all three to baseline keeps signals consistent; if the
+    # workload ever creeps beyond baseline, you'll see warnings/audits
+    # before things break.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: latest

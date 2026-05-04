@@ -1,0 +1,76 @@
+# CiliumLoadBalancerIPPool + CiliumL2AnnouncementPolicy for the mgmt cluster.
+#
+# Two pools, two policies — one per network:
+#
+#   mgmt-pool / mgmt-l2 — IPs in the management network (172.16.192.x),
+#     announced via ARP on ens192. For management-plane services (Rancher,
+#     monitoring dashboards, admin tools).
+#
+#   vm-pool  / vm-l2  — IPs in the VM network (10.13.160.x), announced via
+#     ARP on ens224. For services that prefer the bonded high-bandwidth
+#     network. Reserved for future use; no services drawing from this pool
+#     yet on mgmt cluster.
+#
+# Service selection:
+#   - Set label `lb-pool: mgmt` (or `lb-pool: vm`) on the Service to pick
+#     which pool it draws from and which interface announces its IP.
+#   - Optionally pin a specific IP with annotation
+#     `lbipam.cilium.io/ips: "172.16.192.7"` (or whichever IP from the pool).
+#
+# Adding IPs:
+#   - Add a `- cidr: <ip>/32` entry to the relevant pool's spec.blocks list.
+#   - kubectl apply this file. No restart, no impact on already-assigned IPs.
+#   - Coordinate with IPAM (your own — you wear the network hat) to mark the
+#     new IP as reserved for K8s LB use.
+---
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: mgmt-pool
+spec:
+  blocks:
+    - cidr: 172.16.192.7/32
+    - cidr: 172.16.192.8/32
+    - cidr: 172.16.192.9/32
+  serviceSelector:
+    matchLabels:
+      lb-pool: mgmt
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: mgmt-l2
+spec:
+  serviceSelector:
+    matchLabels:
+      lb-pool: mgmt
+  interfaces:
+    - ens192
+  externalIPs: true
+  loadBalancerIPs: true
+---
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: vm-pool
+spec:
+  blocks:
+    - cidr: 10.13.160.7/32
+    - cidr: 10.13.160.8/32
+    - cidr: 10.13.160.9/32
+  serviceSelector:
+    matchLabels:
+      lb-pool: vm
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: vm-l2
+spec:
+  serviceSelector:
+    matchLabels:
+      lb-pool: vm
+  interfaces:
+    - ens224
+  externalIPs: true
+  loadBalancerIPs: true

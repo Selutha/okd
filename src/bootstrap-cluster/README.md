@@ -62,27 +62,30 @@ By default, the script targets `pdsh -g rke2-<cluster>-<role>` (e.g.,
 
 RKE2's bundled CNI charts are configured via a `HelmChartConfig` manifest dropped
 into `/var/lib/rancher/rke2/server/manifests/` *before* `rke2-server` starts the
-first time. For each cluster we keep a per-cluster copy in this directory:
+first time. The HelmChartConfig file lives in **each cluster's own directory**
+under `src/`, not here:
 
-- `cilium-config-mgmt.yaml` — mgmt cluster
-- (future clusters add their own next to it)
+- `src/kub-mgmt/cilium-helmchartconfig.yaml` — mgmt cluster
+- `src/<cluster>/cilium-helmchartconfig.yaml` — future workload clusters
 
 **Workflow per cluster build:**
 
-1. Copy the matching file to the **seed node only**, renamed to `rke2-cilium-config.yaml`:
+1. Copy the cluster's HelmChartConfig file to the **seed node only**, renamed to
+   `rke2-cilium-config.yaml`:
 
    ```bash
-   scp cilium-config-mgmt.yaml <seed>:/tmp/
-   ssh <seed> sudo install -m 0644 /tmp/cilium-config-mgmt.yaml \
+   scp src/<cluster>/cilium-helmchartconfig.yaml <seed>:/tmp/
+   ssh <seed> sudo install -m 0644 /tmp/cilium-helmchartconfig.yaml \
      /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
    ```
 
 2. Run `bootstrap-cluster.sh <cluster> seed`.
 
 3. After the cluster is Active and Cilium is verified healthy, **delete the file**
-   from the seed node. The HelmChartConfig CR persists in etcd; day-2 changes go
-   via Rancher UI / `kubectl edit helmchartconfig -n kube-system rke2-cilium`.
-   The file in this repo stays as the historical "how the cluster started" record.
+   from the seed node. The HelmChartConfig CR persists in etcd. Day-2 changes go
+   through the repo: edit `src/<cluster>/cilium-helmchartconfig.yaml`, then
+   `kubectl apply -f` it (avoid `kubectl edit` — it desyncs the file from the
+   live cluster). Commit the change after a successful apply.
 
    ```bash
    ssh <seed> sudo rm /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
