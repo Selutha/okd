@@ -1,0 +1,19 @@
+# Per-machine project memory database (mem-cli auto-capture).
+# This is local SQLite state captured by Claude Code's memory hooks.
+# It diverges per machine; each checkout should have its own.
+memory.db
+memory.db-journal
+memory.db-wal
+memory.db-shm
+memory.capture.log
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local-only Claude session state
+.claude/local/

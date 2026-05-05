@@ -1,204 +1,218 @@
-# Cilium native-routing static routes on Kemp
+# Ingress architecture — Cilium Gateway API
 
-Per-cluster static routes that let the Kemp Connection Manager Ingress Controller
-(RDR-7) reach pod IPs directly as next-hop-routable destinations. This is the
-hard requirement that gates the entire L7 ingress architecture.
+In-cluster ingress is handled by **Cilium Gateway API**, not by Kemp L7 or by
+a separate ingress controller (Traefik, ingress-nginx). External traffic that
+needs the cluster from outside the HPC fabric optionally relays through Kemp
+in **L4 passthrough mode** — Kemp doesn't terminate TLS, doesn't inspect
+content, just forwards bytes to a Cilium gateway in the cluster.
 
-**This doc is separate from `kemp-vip-design.md`** because the routing applies to
-the CM's data path for the L7 ingress add-on, not the L4 apiserver/supervisor
-VIPs. Those VIPs work regardless of pod-CIDR routing.
+## Why this shape
 
-## Why Cilium has to be in native-routing mode
+We're already running Cilium with `kubeProxyReplacement: true`. Cilium 1.16+
+ships native Gateway API support that re-uses the same eBPF datapath — adding
+ingress is enabling a feature flag, not introducing a new control plane or
+extra pod. Trade-offs were considered against (a) Kemp L7, (b) Traefik
+in-cluster, and (c) Cilium GW; see the project decision log for the full
+comparison. Short version:
 
-The Kemp Ingress Controller add-on populates each Virtual Service's Real Server
-list with **pod IPs** (taken from the `Service.endpoints` resource on the K8s API).
-For the CM to forward traffic to those pod IPs, they have to be reachable via
-standard IP routing — i.e., the CM's kernel needs a route entry that says "send
-packets for `<pod-CIDR>` via `<some-node-IP>`."
+- One control plane (k8s + Cilium) instead of two (k8s + Kemp L7 config)
+- Hubble already gives us L7 observability; in-cluster ingress hooks into it
+- GitOps-friendly config via Gateway API CRs
+- Gateway API is the SIG-Network direction; Ingress is on the way out
+- WAF deferred to per-service Kemp L4-fronted VIPs when needed (Kemp can
+  insert L7 + WAF for that one hostname while everything else stays direct)
 
-Cilium has two main data plane modes:
-
-| Mode | How pods reach each other | CM-to-pod reachability |
-|---|---|---|
-| **Native routing** | Direct via host routing tables; pod CIDR is L3-routable across the cluster | **Yes** — CM can also route to pod IPs given static routes per node |
-| **Encapsulation** (VXLAN/Geneve) | Pods communicate via tunnels between Cilium agents | **No** — pod IPs only exist inside the tunnel mesh |
-
-For this project we set `cni: cilium` with `tunnelProtocol: disabled` (or the
-equivalent native-routing flag in the Cilium values file), making pod IPs
-visible at L3 from anywhere on the cluster's node VLAN that has a route to them.
-
-## What "static routes per node" actually means
-
-Cilium-in-native-routing assigns each node a slice of the cluster's pod CIDR
-(typically a `/24` carved from the cluster's `/16`). For a 3-server cluster:
+## Traffic flow
 
 ```
-Cluster pod CIDR:   10.42.0.0/16
-  Node 1 (10.50.20.31):  pod range 10.42.0.0/24
-  Node 2 (10.50.20.32):  pod range 10.42.1.0/24
-  Node 3 (10.50.20.33):  pod range 10.42.2.0/24
+internal client (ufhpc network)
+        │
+        ▼
+    DNS:  app.ufhpc → cluster Gateway IP (LoadBalancer-via-MetalLB or NodePort)
+        │
+        ▼
+    Cilium Gateway (eBPF + Envoy filter chain) — TLS termination + L7 routing
+        │
+        ▼
+    backend Service → pod
 ```
 
-Pods on Node 1 have IPs in `10.42.0.0/24`, etc. To reach `10.42.1.5` from outside
-the cluster, you need a route that says "10.42.1.0/24 via 10.50.20.32."
-
-For the Kemp CM to reach any pod, it needs **one route per node** added under
-*System Configuration → Network Setup → Additional Routes*:
+For external-only traffic that must go through Kemp:
 
 ```
-Destination          Gateway          Interface
-10.42.0.0/24        10.50.20.31      eth0 (or whichever VLAN interface)
-10.42.1.0/24        10.50.20.32      eth0
-10.42.2.0/24        10.50.20.33      eth0
+external client (research collaborator, federation, internet)
+        │
+        ▼
+    DNS:  ext-app.ufhpc → kemp-VIP
+        │
+        ▼
+    Kemp VS  (L4 TCP passthrough, no TLS termination, no inspection)
+        │
+        ▼
+    Cilium Gateway IP   (via static route or via cluster's external network)
+        │
+        ▼
+    Cilium Gateway → backend Service → pod
 ```
 
-Per cluster. Multiplied by the number of cluster nodes.
+If a specific external service later needs WAF, that one service moves to a
+**separate Kemp VIP** in **L7 mode** with the cert at Kemp and WAF rules
+applied. The rest of the cluster keeps the L4 passthrough path. WAF is
+opt-in per service via DNS hostname routing — no global WAF, no all-or-nothing
+choice. (Implementation deferred — capture as a runbook when the first
+WAF-needing service surfaces.)
 
-## Where to find each node's assigned slice
+## What's no longer needed (vs the original design)
 
-Once the cluster is up, query the K8s API:
+The earlier design used **Cilium native routing** + **Kemp Connection Manager
+Ingress Controller** populating Real Servers from `Service.endpoints`. That
+required:
 
-```bash
-kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.podCIDR}{"\n"}{end}'
-```
+- Static routes per node on Kemp pointing at each node's pod CIDR slice
+- L2 adjacency between Kemp and the cluster's node VLAN
+- Kemp re-syncing routes whenever a node was added/removed
 
-Output:
-```
-mgmt-server-001    10.42.0.0/24
-mgmt-server-002    10.42.1.0/24
-mgmt-server-003    10.42.2.0/24
-mgmt-server-004    10.42.3.0/24
-mgmt-server-005    10.42.4.0/24
-```
+None of that applies now:
 
-Each line maps to one CM Additional Route. As the cluster scales (add agent
-nodes), new entries appear; the CM's route list must be updated to match.
+- Cilium runs in **VXLAN encapsulation** mode, so pod IPs are not L3-routable
+  outside the tunnel mesh — Kemp couldn't reach them even if we wanted it to
+- Kemp doesn't need to know individual pod IPs at all; it just forwards to a
+  Service-backed external IP (LoadBalancer via MetalLB, NodePort, or a
+  cluster-VIP allocated to the Cilium Gateway)
+- Adding/removing nodes requires no Kemp config change
 
-## Kemp HA — both units need the routes
+If you find references to "static routes per node on Kemp" or "Kemp CM
+Ingress Controller" in older docs (design-rke2.md RDR-7, runbooks, etc.),
+those are obsolete — flag for cleanup when next touched.
 
-The Kemp HA pair acts as one logical unit, but Additional Routes are configured
-per-CM. Add the same route table on both units. Otherwise a failover lands you
-on a unit that can't reach pods.
+## Cilium config requirements (already in place)
 
-## L2 adjacency requirement
-
-Static routes only work if the gateway IP (node IP) is directly reachable from
-the CM's interface. That means the CM must be **L2-adjacent to the cluster's
-node VLAN** — either an interface on that VLAN, or a VLAN-tagged subinterface on
-a trunk. Routes through an intermediate L3 hop (a separate router) won't work
-the way you want; the CM would forward to the router, the router would forward
-to the node, and ARP resolution for the pod IP is on the node, not the router.
-
-This is captured in design-rke2.md §5.1 + RDR-7 hard requirements. If the
-network design forces the CM into a separate L3 segment, fall back to in-cluster
-ingress-nginx + Kemp L4 passthrough on `*.apps:443` (the RDR-7 fallback).
-
-## Cilium config that has to match
-
-In the cluster's `ufrc_rke2::config` smart class param (or equivalent), the
-Cilium Helm values need:
+In `kub-mgmt/cilium-helmchartconfig.yaml`:
 
 ```yaml
-# Cilium Helm chart values (set via HelmChartConfig override or RKE2 manifest dir)
-tunnelProtocol: disabled         # native routing, no VXLAN encapsulation
-ipam:
-  mode: cluster-pool             # gives each node a /24 slice by default
-ipv4NativeRoutingCIDR: 10.40.0.0/20   # match THIS cluster's cluster-cidr (per cluster)
-autoDirectNodeRoutes: true       # nodes install routes for each other's slices
+routingMode: tunnel
+tunnelProtocol: vxlan
+kubeProxyReplacement: true
+gatewayAPI:
+  enabled: true
 ```
 
-Per-cluster `ipv4NativeRoutingCIDR` matches that cluster's pod CIDR (mgmt
-`10.40.0.0/20`, infra `10.40.16.0/20`, etc — see §3.4 of design-rke2.md). The
-CM's route list per cluster covers only that cluster's slice.
+Plus the CIDR + MTU + ipam values per cluster.
 
-## Verification — how to know it's working
+## Bootstrap order (one-time per cluster)
 
-After cluster bootstrap and route configuration, from the CM's serial console
-or SSH:
+Gateway API CRDs are NOT bundled with Cilium 1.19 — install them once before
+enabling `gatewayAPI: true`:
 
 ```bash
-# Should succeed:
-ping -c 3 <node-ip>            # L2 adjacency confirmed
-ping -c 3 <pod-ip>             # native routing + static route both work
+GATEWAY_API_VERSION=v1.2.0
+for crd in gatewayclasses gateways httproutes referencegrants; do
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_API_VERSION}/config/crd/standard/gateway.networking.k8s.io_${crd}.yaml
+done
 
-# Get a known pod IP first:
-# (from a host that has kubectl):
-kubectl get pods -A -o wide | grep -v "Running\|Pending"   # should be empty
-kubectl run -n default test --image=busybox --rm -it --restart=Never -- sleep 60 &
-kubectl get pod test -o jsonpath='{.status.podIP}'
+# Experimental — needed for L4 TCP/TLS passthrough routes:
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/${GATEWAY_API_VERSION}/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml
 ```
 
-Pinging the pod from the CM is the canonical "did it work" check. If that fails
-but pinging the node IP succeeds, the node-side routing is broken (Cilium not in
-native mode) or the pod CIDR is wrong. If pinging the node fails too, L2
-adjacency or CM interface config is the problem.
+After CRDs apply, edit the Cilium HelmChartConfig CR to enable
+`gatewayAPI: true` (or restart with the updated manifest). Cilium picks up
+the CRDs and its GatewayClass becomes available:
 
-## Per-cluster routing tables — fill in during build
+```bash
+kubectl get gatewayclass
+# NAME     CONTROLLER                     ACCEPTED   AGE
+# cilium   io.cilium/gateway-controller   True       30s
+```
 
-CIDR allocation (per design-rke2.md §3.4):
+## What goes in a Gateway and HTTPRoute
 
-| Cluster | Pod CIDR | Per-node slice (Cilium default /24) | Cap |
-|---|---|---|---|
-| mgmt | `10.40.0.0/20` | `10.40.0.0/24` … `10.40.15.0/24` | 16 nodes |
-| infra | `10.40.16.0/20` | `10.40.16.0/24` … `10.40.31.0/24` | 16 nodes |
-| gpu | `10.40.32.0/20` | `10.40.32.0/24` … `10.40.47.0/24` | 16 nodes |
-| gpu-2 (future) | `10.40.48.0/20` | `10.40.48.0/24` … `10.40.63.0/24` | 16 nodes |
+A `Gateway` resource defines a listener (port + protocol + TLS settings) and
+references the `GatewayClass`. It gets a public IP allocated by whatever
+external-IP mechanism is in use (MetalLB, Cilium L2 announcement, etc.).
 
-No collisions: the four `/20` ranges fit cleanly in `10.40.0.0/18` with no overlap.
+An `HTTPRoute` references a Gateway and defines per-hostname/per-path routing
+to backend Services.
 
-### mgmt cluster
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cluster-gw
+  namespace: gateway-system
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - name: wildcard-ufhpc-tls   # cert-manager-managed Secret
+      allowedRoutes:
+        namespaces:
+          from: All
 
-5 servers, no agents. 5 routes total (cap 16).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rancher
+  namespace: cattle-system
+spec:
+  parentRefs:
+    - name: cluster-gw
+      namespace: gateway-system
+  hostnames:
+    - rancher.ufhpc
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: rancher
+          port: 443
+```
 
-| Destination | Gateway (node IP) | Notes |
-|---|---|---|
-| 10.40.0.0/24 | TBD (mgmt-server-001 IP) | First node Cilium assigns |
-| 10.40.1.0/24 | TBD (mgmt-server-002 IP) | |
-| 10.40.2.0/24 | TBD (mgmt-server-003 IP) | |
-| 10.40.3.0/24 | TBD (mgmt-server-004 IP) | |
-| 10.40.4.0/24 | TBD (mgmt-server-005 IP) | |
+Apps install their HTTPRoute alongside their Helm chart values; cluster admin
+owns the Gateway resource.
 
-The actual `/24` slice each node gets is decided by Cilium at first start, not by
-ordinal — query `kubectl get nodes -o jsonpath='{...}{.spec.podCIDR}{...}'` after
-the cluster is up to confirm.
+## External LoadBalancer for the Cilium Gateway
 
-### infra cluster
+Cilium GW listens on a Service of type `LoadBalancer`. Without a cloud
+provider, that Service stays `Pending` unless an external-IP allocator is
+present. Two options:
 
-3 servers + 4 agents = 7 nodes today. 7 routes.
+1. **MetalLB** — assigns IPs from a configured pool to LoadBalancer
+   Services. Pool drawn from the cluster node VLAN (172.16.192.x range, or
+   a dedicated subnet for cluster-LB IPs). Standard, well-understood.
 
-| Destination range | Gateway range | Notes |
-|---|---|---|
-| 10.40.16.0/24 … 10.40.22.0/24 | infra-server-001..003, infra-agent-001..004 | actual mapping from `kubectl get nodes` |
+2. **Cilium L2 announcements** — Cilium itself can ARP-announce
+   LoadBalancer IPs. Removes the MetalLB dependency. Less mature than
+   MetalLB but one fewer component to manage. Configure via
+   `CiliumL2AnnouncementPolicy` CRDs.
 
-### gpu cluster
+Pick at install time; both work. MetalLB has more StackOverflow coverage.
 
-3 servers + 4 agents (B200/B300/L40 hosts). 7 routes today, growth expected as
-GPU workload scales.
+## Verification (after enabling and applying first Gateway)
 
-| Destination range | Gateway range | Notes |
-|---|---|---|
-| 10.40.32.0/24 … 10.40.38.0/24 | gpu-server-001..003, gpu-agent-001..004 | refresh routes after each agent batch |
+```bash
+# GatewayClass present and accepted
+kubectl get gatewayclass cilium -o yaml | grep -A3 conditions
 
-### gpu-2 cluster (future mirror)
+# Gateway has an address allocated
+kubectl get gateway -A
 
-Pod CIDR `10.40.48.0/20`. Routes added when cluster is built.
+# HTTPRoute is bound to the gateway
+kubectl get httproute -A -o wide
 
-## Build checklist (per cluster, after the cluster is up)
+# Cilium agent picked it up
+kubectl -n kube-system exec ds/cilium -- cilium-dbg config | grep -i gateway
+```
 
-- [ ] Run `kubectl get nodes -o jsonpath=...` to dump node-name → podCIDR mapping.
-- [ ] On Kemp CM unit 1: System Config → Network Setup → Additional Routes →
-      add one route per node.
-- [ ] On Kemp CM unit 2: same routes (HA pair must match).
-- [ ] From CM, `ping <pod-ip>` to verify reachability.
-- [ ] Document the route table in cluster-specific runbook for ops reference.
-- [ ] Set up a calendar reminder or hook to re-sync routes after agent additions.
-      (Future: automate this via Foreman post-provision hook + Kemp API.)
+## What this doc does NOT cover
 
-## What this does NOT do
-
-- Does not configure the L7 ingress controller itself — that's the RDR-7 install
-  spike (separate work).
-- Does not handle Cilium config — that's in the cluster's smart class param +
-  HelmChartConfig override (part of the module + Foreman setup).
-- Does not handle DNS — apiserver DNS is in `kemp-vip-design.md`; the
-  `*.apps.<cluster>.<base>` wildcard is RDR-7.
+- The L4 VIPs for kube-apiserver + supervisor — those are in `kemp-vip-design.md`
+- DNS structure for the cluster — in design-rke2.md
+- WAF integration when a service needs it — TBD per-service runbook
+- cert-manager / Let's Encrypt vs internal CA — TBD per environment policy

@@ -164,11 +164,12 @@ reimage, so Puppet renders the new values on first boot of the fresh hosts.
 
 ### Path B — Uninstall in place (lighter touch)
 
-Per the "back out the entire cluster" section of
-`src/bootstrap-cluster/manual-bootstrap-runbook.md`, do this on every node:
+On every node:
 
 ```bash
 sudo /usr/local/bin/rke2-uninstall.sh
+# 50-rancher.yaml is only present on Rancher-managed clusters; harmless
+# no-op for the mgmt cluster which never had Rancher join it.
 sudo rm -f /etc/rancher/rke2/config.yaml.d/50-rancher.yaml
 ```
 
@@ -242,60 +243,70 @@ Save the CR. Don't run any registration commands yet.
 
 ## Phase 5 — Bootstrap
 
-Follow `src/bootstrap-cluster/manual-bootstrap-runbook.md` — the procedure
-is identical to the original build. Key points specific to this rebuild:
+Follow `context/bootstrap.md` — the procedure is identical to the
+original mgmt cluster build. **Do NOT use `bootstrap-cluster.sh`.** That
+script registers nodes with Rancher to fetch a join token — Rancher
+doesn't exist yet on a fresh mgmt cluster. The mgmt cluster bootstraps
+via direct binary install (tar method per RDR-8 — see `bootstrap.md`
+Phase 2 for the exact command and required env vars).
 
-### 5a. Pre-flight checks (from the runbook)
+`bootstrap-cluster.sh` is for *workload* clusters (gpu, infra) joining
+an already-running Rancher.
 
-Re-verify everything in the runbook's Pre-flight section. The most likely
-gotchas after a re-roll:
+### 5a. Pre-flight checks (from `bootstrap.md`)
+
+Re-verify everything in `bootstrap.md`'s Prerequisites section. The most
+likely gotchas after a re-roll:
 
 - DNS record still resolves (it should — we didn't touch it)
 - Kemp VIP Real Servers show unhealthy (expected — no nodes registered yet)
 - `00-puppet.yaml` shows new CIDRs (verified in Phase 3)
 - `rke2-server`/`rke2-agent` services NOT running on any node (verified
   by `rke2-uninstall.sh` in Phase 2)
+- Puppet host params `has_kub_installed=true` and
+  `has_etcd_local_user=true` set on each mgmt host
 
 ### 5b. Seed-only Cilium HelmChartConfig drop
 
-On the seed node ONLY:
+On the seed node ONLY, before `rke2-server` first start:
 
 ```bash
 scp src/kub-mgmt/cilium-helmchartconfig.yaml <seed>:/tmp/
-ssh <seed> sudo install -m 0644 /tmp/cilium-helmchartconfig.yaml \
+ssh <seed> sudo install -D -m 0644 /tmp/cilium-helmchartconfig.yaml \
   /var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
 ```
 
-This must be done **before** `rke2-server` first starts; otherwise default
-Cilium values deploy and your overrides only land on next reconcile.
+The `-D` creates `/var/lib/rancher/rke2/server/manifests/` if missing
+(it doesn't exist on a clean RKE2 install).
 
-### 5c. Run the bootstrap script (or manual procedure)
+This drop must be in place **before** `rke2-server` first starts;
+otherwise default Cilium values deploy and your overrides only land on
+next reconcile.
 
-Seed first, single node:
+### 5c. Bootstrap procedure — follow bootstrap.md
 
-```bash
-bootstrap-cluster.sh mgmt seed
-```
+`bootstrap.md` covers the full cluster bring-up:
 
-Wait until Rancher UI shows the cluster Active and the seed node Ready.
-Don't start the next stage until then — adding more servers while the seed
-is still bootstrapping causes etcd-quorum confusion.
+1. **Phase 2** — install the RKE2 binary on each node via the tar method
+   (the exact command is in `bootstrap.md` — `INSTALL_RKE2_METHOD=tar` is
+   mandatory per RDR-8; the default RPM method breaks system-upgrade-controller)
+2. **Phase 3** — start `rke2-server` on the seed, wait for it Active
+3. **Phase 4** — install + start additional servers **serially** (one at
+   a time, waiting for each to be Ready before starting the next — adding
+   servers while the seed is still bootstrapping causes etcd-quorum
+   confusion)
+4. **Phase 5** — install **6** Gateway API CRDs: the 5 standard channel
+   ones (gatewayclasses, gateways, httproutes, grpcroutes, referencegrants)
+   **plus** experimental TLSRoute. Cilium 1.19's operator scheme requires
+   TLSRoute even on clusters that don't functionally use it.
+5. **Phase 5a** — bounce cilium-operator pods so they re-evaluate CRD
+   availability (otherwise GatewayClass `cilium` doesn't get created)
+6. **Phase 6+** — smoke tests, then Phase 7 removes the on-disk
+   `rke2-cilium-config.yaml` from the seed (etcd retains the
+   HelmChartConfig CR, day-2 changes go via repo + `kubectl apply`)
 
-Additional servers, **serially** (one at a time):
-
-```bash
-bootstrap-cluster.sh mgmt server -w mgmt-server-002.example
-# wait for Ready
-bootstrap-cluster.sh mgmt server -w mgmt-server-003.example
-# wait for Ready
-# ...etc through -005
-```
-
-Agents, can be parallel:
-
-```bash
-bootstrap-cluster.sh mgmt agent
-```
+Follow `bootstrap.md` end-to-end — don't try to summarize it here. The
+phases are well-tested.
 
 ## Phase 6 — Validate
 
@@ -336,7 +347,7 @@ sudo KUBECONFIG=/etc/rancher/rke2/rke2.yaml \
 
 ### 7a. Remove the bootstrap-only Cilium file from the seed
 
-Per the bootstrap-cluster README, after the cluster is Active and Cilium is
+Per `bootstrap.md` Phase 7, after the cluster is Active and Cilium is
 verified healthy:
 
 ```bash
@@ -367,8 +378,10 @@ Keycloak). Do not apply them in this phase.
 Once the rebuild is verified, fold any operational lessons from this run
 into:
 
-- `src/bootstrap-cluster/manual-bootstrap-runbook.md` — if any step in this
-  plan revealed a gap in the runbook, add it there
+- `context/bootstrap.md` — if any step in this plan revealed a gap in the
+  mgmt cluster bootstrap procedure, add it there
+- `src/bootstrap-cluster/manual-bootstrap-runbook.md` — workload-cluster
+  runbook; only update if the gap also applies to clusters joining via Rancher
 - `context/192.168-allocation-actual.md` — if you discover additional 192.168
   subnets during the process, add them
 - This file (`mgmt-rebuild-cidr-pivot.md`) — can be archived or deleted once
@@ -382,16 +395,19 @@ Just finish the teardown. There's no value in a half-torn-down cluster.
 
 ### Mid-Phase 5 (bootstrap failing)
 
-Per the runbook's "Need to back out a registration" section, on the
-affected node:
+On the affected node:
 
 ```bash
 sudo /usr/local/bin/rke2-uninstall.sh
+# 50-rancher.yaml only exists on Rancher-managed clusters — harmless for mgmt
 sudo rm -f /etc/rancher/rke2/config.yaml.d/50-rancher.yaml
 ```
 
-Delete the node from Rancher UI. Investigate the cause (most likely DNS,
-token, or `00-puppet.yaml` content), fix, retry from Phase 5.
+There's no Rancher UI to remove the node from (Rancher doesn't exist yet
+on a fresh mgmt cluster). Investigate the cause (most likely DNS, etcd
+quorum loss from starting too many servers in parallel, missing Puppet
+prereqs like `has_etcd_local_user=true`, or `00-puppet.yaml` content),
+fix, retry from Phase 5.
 
 ### Bootstrap fully failed, want to re-attempt
 

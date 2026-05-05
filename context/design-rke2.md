@@ -1,7 +1,37 @@
 # Multi-Cluster RKE2 Infrastructure — Design Document (Alternative)
 
-**Status:** Draft v0.8 — for iteration alongside `design.md` (the OKD variant)
-**Date:** 2026-04-24
+**Status:** Draft v0.9 — for iteration alongside `design.md` (the OKD variant)
+**Date:** 2026-05-01
+
+> **⚠ Architecture supersession notice (v0.9):** several major decisions in
+> this document have been replaced during build-out. **For current canonical
+> answers consult these docs first; this design doc is a historical record:**
+>
+> - **Cilium data plane**: VXLAN encapsulation, NOT native routing. See
+>   `kemp-cilium-routing.md`. (Replaces §3.4 native-routing assumptions
+>   and §5.5 Connection Manager static-route configuration.)
+> - **In-cluster ingress**: Cilium Gateway API. See `kemp-cilium-routing.md`.
+>   (Replaces RDR-7 / Kemp Connection Manager Ingress Controller. The
+>   `*.apps.<cluster>.<base>` Kemp VIP is no longer part of the design.
+>   `rke2-ingress-nginx` stays disabled.)
+> - **Kemp's role**: L4 TCP passthrough only — kube-apiserver (6443) and RKE2
+>   supervisor (9345). Optional per-service external relay VIPs may be added
+>   later; WAF deferred per-service. See `kemp-vip-design.md`.
+> - **Pod / service CIDRs**: 192.168.0.0/16 carved into /20 pairs per cluster,
+>   not 10.40.0.0/18. See `cidr-plan.md`. (Replaces §3.4 CIDR allocation table.)
+> - **Underlay network**: pod traffic and etcd peer traffic ride the high-speed
+>   VM network (`<host>-vm.ufhpc`, ens224, MTU 9000); management traffic
+>   (kubectl, Kemp VIP) stays on the mgmt network (ens192, 172.16.192.0/24).
+>
+> Sections in this doc that reference RDR-7, Cilium native routing, the
+> 10.40.x.x CIDR space, or `*.apps.<cluster>.<base>` Kemp ingress are
+> superseded. The decision rationale they captured is preserved here as
+> history; the operational truth lives in the per-topic docs above.
+
+**Changes since v0.8:** Architecture supersession notice added (above):
+RDR-7 retired in favor of Cilium Gateway API; Cilium switched to VXLAN
+encapsulation; CIDR space changed to 192.168.0.0/16; underlay split between
+mgmt (ens192) and high-speed VM (ens224) networks formalized.
 **Changes since v0.7:** Added §3.1.1 — server-node redundancy planning per cluster. Etcd quorum math reference table (3 = 1 failure, 5 = 2 failures, 7 = 3 failures, with maintenance-window-safety column). Per-cluster lean captured: **5 / 3 / 3 for mgmt / infra / GPU.** Asymmetry rationale documented (platform tier durable, workload tier disposable). Triggers for bumping GPU to 5 listed. Install-flow updated to reference variable server count.
 **Changes since v0.6:** **RDR-7 architecture corrected after PDF review of the actual Connection Manager Ingress Controller documentation.** Major correction: there is **no in-cluster Ingress Controller pod** — the controller is an **add-on installed on the Connection Manager itself** that polls K8s API directly via uploaded kubeconfig. **TLS cert flow corrected:** certs uploaded to CM by name and referenced via `kemp.ax/certfile` annotation. Added §5.5 — Connection Manager static-route configuration for pod CIDRs (Cilium native-routing mode required).
 **Changes since v0.5:** RDR-7 added: Kemp Ingress Controller adopted for L7 ingress; ingress-nginx removed from workload clusters. §3.3 RKE2 config updated (`disable: rke2-ingress-nginx`, `disable-kube-proxy: true`). §5.2 Kemp VS table split into L4 (kube-apiserver/registration) and L7. §5.3 DNS section expanded with wildcard pattern.

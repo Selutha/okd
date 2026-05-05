@@ -4,9 +4,16 @@ Per-cluster L4 TCP passthrough VIPs on the Kemp Connection Manager HA pair, one
 per cluster, fronting both `kube-apiserver` (TCP 6443) and `rke2-server` /
 supervisor (TCP 9345). This document is the build checklist.
 
-**Scope of this doc:** the cluster API + registration VIPs only. The L7 ingress
-controller for `*.apps.<cluster>.<base>` is a separate concern documented in
-design-rke2.md RDR-7. Same Kemp hardware, different VIPs, different mode.
+**Scope of this doc:** the cluster API + registration VIPs only — the L4 TCP
+passthrough VIPs that front kube-apiserver (6443) and the RKE2 supervisor
+(9345) for each cluster.
+
+Application ingress (HTTPS to apps inside the cluster) is **not** handled by
+Kemp in this design. That's now Cilium Gateway API in-cluster — see
+`kemp-cilium-routing.md` for the ingress architecture. Kemp may still appear
+in the path for *external* traffic that needs to reach a cluster service,
+either as L4 passthrough (preferred default) or as a per-service L7 VIP
+when WAF / content rules are required (deferred per-service decision).
 
 ## Per-cluster shape
 
@@ -75,8 +82,10 @@ infra.<base>.   IN A    <kemp-vip-infra>
 gpu.<base>.     IN A    <kemp-vip-gpu>
 ```
 
-The `*.apps.<cluster>.<base>` wildcard for ingress is a separate concern (RDR-7)
-and points at a different Kemp VIP.
+Application hostnames (Rancher, Harbor, Keycloak, etc.) point directly at the
+Cilium Gateway's external IP for in-cluster traffic, or at a Kemp L4 VIP
+when external-facing traffic must be relayed. Neither uses this VIP — that
+DNS/VIP work lives elsewhere (per-service or in `kemp-cilium-routing.md`).
 
 ## Real Server membership over the cluster lifecycle
 
@@ -104,9 +113,14 @@ joins go through the VIP.
 ## Kemp HA notes
 
 The Kemp HA pair shares the VIP via VRRP/equivalent. Both units must be on the
-same VLAN as the VIP and (per RDR-7) on the same VLAN as the cluster's node
-network. No active/active config needed for these L4 VSes — active/passive is
-fine since the latency and throughput requirements are well within a single
+same VLAN as the VIP. (The earlier requirement that Kemp be L2-adjacent to the
+cluster's node VLAN was driven by the now-retired Cilium native-routing + Kemp
+CM ingress design — with VXLAN encap and Cilium GW in-cluster, Kemp doesn't
+route to pod IPs and cross-VLAN is fine as long as TCP/6443 and TCP/9345 reach
+the server nodes.)
+
+No active/active config needed for these L4 VSes — active/passive is fine
+since the latency and throughput requirements are well within a single
 unit's capacity.
 
 ## Idempotent re-runs and DR rebuilds
@@ -142,8 +156,10 @@ For each cluster, in order:
 
 ## What this VIP does NOT do
 
-- L7 ingress termination — that's RDR-7's separate VIP set.
+- Application ingress / L7 — Cilium Gateway API handles in-cluster ingress;
+  external relay is a separate per-service VIP if needed.
 - Workers / agents — backend is control-plane only.
-- etcd peer traffic (2379/2380) — that's intra-cluster, Cilium handles it.
+- etcd peer traffic (2379/2380) — intra-cluster, on the VM network, Cilium
+  handles it.
 - kubelet API (10250) — Prometheus / metrics-server hit nodes directly via
   in-cluster service IPs, no external VIP needed.

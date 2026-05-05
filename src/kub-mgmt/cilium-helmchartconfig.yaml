@@ -20,7 +20,7 @@
 #    didn't actually take effect.
 #
 # Underlay MTU is 9000 on ens224 (verified). Pod MTU = 9000 - 50 byte VXLAN overhead.
-# CIDR scheme is per cidr-plan.md (192.168.0.0/16 sliced into /20 pairs).
+# CIDR scheme is per cidr-plan.md (100.64.0.0/10 — each cluster owns a /16 slot).
 #
 # ----- Gateway API -----
 # Enabled. Cilium acts as the in-cluster ingress (no Traefik, no
@@ -28,20 +28,30 @@
 # Cilium-managed gateway; external traffic that needs WAF can be relayed via Kemp
 # L4 passthrough (a separate VIP per service, deferred — see kemp-vip-design.md).
 #
-# REQUIRED before Gateway API takes effect: install ALL FIVE upstream standard
-# Gateway API CRDs (Cilium 1.19's operator hard-requires all of them; missing
-# any one causes the Gateway API controller to silently not start). Then bounce
-# the cilium-operator pods so they re-evaluate CRD availability — see
-# context/bootstrap.md Phase 5a.
+# REQUIRED before Gateway API takes effect: install ALL SIX Gateway API CRDs
+# (5 standard + 1 experimental TLSRoute). Cilium 1.19's operator hard-requires
+# all of them — TLSRoute included even on clusters that don't route TLS through
+# the Gateway API, because the operator's gateway controller registers the
+# TLSRouteList type in its Go scheme regardless of whether it's used. Without
+# the CRD, scheme registration fails and the gateway-api reconcile loop spins
+# on errors, never creating the GatewayClass.
 #
+# Bounce the cilium-operator pods after the CRDs land so they re-register the
+# scheme — see context/bootstrap.md Phase 5a.
+#
+#   GW=https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd
+#
+#   # Standard channel (5 CRDs)
 #   for crd in gatewayclasses gateways httproutes grpcroutes referencegrants; do
-#     kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd/standard/gateway.networking.k8s.io_${crd}.yaml
+#     kubectl apply -f ${GW}/standard/gateway.networking.k8s.io_${crd}.yaml
 #   done
 #
-# TLSRoute (experimental) is intentionally NOT installed on mgmt cluster. It's
-# needed only on workload clusters with external L4/TLS passthrough through Kemp
-# (e.g., GPU cluster's external lane). Install it as part of those clusters'
-# bootstrap, not this one.
+#   # Experimental channel (TLSRoute — required by Cilium 1.19 operator scheme)
+#   kubectl apply -f ${GW}/experimental/gateway.networking.k8s.io_tlsroutes.yaml
+#
+# gatewayAPI.gatewayClass.create: "true" below tells the operator to create
+# the `cilium` GatewayClass on startup. Without this, the operator only WATCHES
+# for GatewayClass resources and you have to create one manually.
 #
 # ----- L2 Announcements -----
 # Enabled. Provides LoadBalancer-type Service IPs to the cluster without an
@@ -85,7 +95,7 @@ spec:
       mode: cluster-pool
       operator:
         clusterPoolIPv4PodCIDRList:
-          - 192.168.0.0/20
+          - 100.64.0.0/20
         clusterPoolIPv4MaskSize: 25
 
     mtu: 8950
@@ -96,6 +106,8 @@ spec:
 
     gatewayAPI:
       enabled: true
+      gatewayClass:
+        create: "true"     # operator creates `cilium` GatewayClass on startup
 
     l2announcements:
       enabled: true

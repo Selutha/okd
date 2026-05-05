@@ -20,22 +20,35 @@ class ufrc_rke2::config {
 
   # Derive node-ip / node-external-ip from interface facts when the corresponding
   # iface parameter is set. User-supplied values in $config take precedence.
+  #
+  # Soft-skip if the interface isn't found (or has no IP yet). Hard-failing here
+  # blocks the entire catalog on first puppet runs — most commonly during kickstart
+  # or right after first boot, before systemd-udev's predictable naming has fully
+  # settled (interfaces transiently appear as eth0/eth1 instead of ens192/ens224)
+  # or before NetworkManager has assigned IPs to secondary NICs. We notice() so
+  # the operator can spot it, but let the rest of the catalog (sysctls, modules,
+  # 00-puppet.yaml without node-ip) apply. The next puppet run picks up node-ip
+  # once the interfaces have settled.
   if $ufrc_rke2::vm_iface {
     $vm_ip = $facts.dig('networking', 'interfaces', $ufrc_rke2::vm_iface, 'ip')
-    unless $vm_ip {
-      fail("ufrc_rke2: vm_iface '${ufrc_rke2::vm_iface}' has no IP — interface missing or down")
+    if $vm_ip {
+      $with_vm = { 'node-ip' => $vm_ip }
+    } else {
+      notice("ufrc_rke2: vm_iface '${ufrc_rke2::vm_iface}' missing or has no IP — skipping node-ip override on this run; will retry next puppet run")
+      $with_vm = {}
     }
-    $with_vm = { 'node-ip' => $vm_ip }
   } else {
     $with_vm = {}
   }
 
   if $ufrc_rke2::mgmt_iface {
     $mgmt_ip = $facts.dig('networking', 'interfaces', $ufrc_rke2::mgmt_iface, 'ip')
-    unless $mgmt_ip {
-      fail("ufrc_rke2: mgmt_iface '${ufrc_rke2::mgmt_iface}' has no IP")
+    if $mgmt_ip {
+      $with_mgmt = $with_vm + { 'node-external-ip' => $mgmt_ip }
+    } else {
+      notice("ufrc_rke2: mgmt_iface '${ufrc_rke2::mgmt_iface}' missing or has no IP — skipping node-external-ip override on this run; will retry next puppet run")
+      $with_mgmt = $with_vm
     }
-    $with_mgmt = $with_vm + { 'node-external-ip' => $mgmt_ip }
   } else {
     $with_mgmt = $with_vm
   }
