@@ -1,3 +1,25 @@
+# DEPRECATED — DO NOT APPLY.
+#
+# Superseded by src/kub-mgmt/rancher-managed-namespaces.yaml, which:
+#   - Sets cattle-system to PSA `privileged` (not `baseline` as below).
+#     Reason: system-upgrade-controller mounts hostPath (/etc/ssl,
+#     /etc/pki, /etc/ca-certificates), which baseline forbids. We
+#     discovered this only after the first install hung. PSA `privileged`
+#     is what actually works.
+#   - Pre-creates the rest of Rancher's namespaces (cattle-fleet-system,
+#     cattle-monitoring-system, cattle-logging-system,
+#     cattle-impersonation-system, cattle-resources-system) with the
+#     right per-namespace PSA level. Without these, enabling those
+#     Rancher features later causes admission failures of the same
+#     shape as the original cattle-system issue.
+#
+# This file is kept for historical reference. The block below sets
+# cattle-system to `baseline` — that worked far enough to get Rancher
+# core pods up, but failed when system-upgrade-controller tried to
+# launch. Use rancher-managed-namespaces.yaml instead.
+#
+# (Original header below for context.)
+#
 # Pre-create the cattle-system namespace with PSA enforcement at `baseline`.
 #
 # Apply BEFORE rancher-helmchart.yaml.

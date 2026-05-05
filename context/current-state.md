@@ -155,7 +155,8 @@ tooling.
 | `src/kub-mgmt/gateway.yaml` | Cilium Gateway in `gateway-system`, listener on 172.16.192.9:443 with wildcard TLS | One Gateway, many HTTPRoutes attach |
 | `src/kub-mgmt/rancher-helmchart.yaml` | Rancher install via RKE2's helm-controller HelmChart CR (no helm CLI required) | Pin Rancher version before applying |
 | `src/kub-mgmt/rancher-route-policy.yaml` | Rancher's HTTPRoute (cattle-system) + ingress NetworkPolicy | Apply after the helm-install Job completes |
-| `src/kub-mgmt/cattle-system-namespace.yaml` | cattle-system namespace with PSA `baseline` labels | **Apply BEFORE rancher-helmchart.yaml** |
+| `src/kub-mgmt/rancher-managed-namespaces.yaml` | All Rancher-managed namespaces (cattle-system, cattle-fleet-system, cattle-monitoring-system, etc.) with per-namespace PSA labels | **Apply BEFORE rancher-helmchart.yaml** |
+| `src/kub-mgmt/cattle-system-namespace.yaml` | DEPRECATED — superseded by `rancher-managed-namespaces.yaml` | Kept for historical reference; do not apply |
 | `src/kub-mgmt/hubble-expose.yaml` | LoadBalancer Service + NetworkPolicy exposing hubble-ui at 172.16.192.8 | Already applied; safe to re-apply (idempotent) |
 | `src/kub-mgmt/cnpg-operator-helmchart.yaml` | CloudNativePG operator (Postgres for Keycloak; future use for other in-cluster DB needs) | Pin chart version |
 | `src/kub-mgmt/keycloak-namespace.yaml` | keycloak namespace with PSA `baseline` labels (preemptive) | **Apply BEFORE keycloak-postgres.yaml or keycloak.yaml** |
@@ -210,7 +211,7 @@ preserving for future sessions:
 - **PSA `baseline` required on cattle-system** to install Rancher.
   Cluster default is `restricted` from `profile: cis`; Rancher pods don't
   satisfy `restricted`. **Always pre-create cattle-system from
-  `cattle-system-namespace.yaml` BEFORE applying `rancher-helmchart.yaml`** —
+  `rancher-managed-namespaces.yaml` BEFORE applying `rancher-helmchart.yaml`** —
   the chart's `createNamespace: true` creates without PSA labels, pods
   get rejected, install hangs, leaves stale webhooks behind. Recovery is
   documented in `First_run.md` Recovery section.

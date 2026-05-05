@@ -1,11 +1,12 @@
 # First Run — Mgmt Cluster: from RKE2-bootstrapped to Rancher-up
 
-**Last updated:** 2026-05-04
+**Last updated:** 2026-05-04 (post-rebuild — incorporates lessons from the CIDR pivot)
 **Scope:** picks up after `bootstrap.md` finishes (mgmt RKE2 cluster is up
-with bare-bones Cilium + Gateway API CRDs) and ends with Rancher
-operational at `https://rancher.rc.ufl.edu/`.
-**Estimated duration on a clean run:** 1-2 hours. With the recoveries
-we hit in the original run: 4-6 hours.
+with Cilium + Gateway API CRDs + GatewayClass + Hubble) and ends with
+Rancher operational at `https://rancher.rc.ufl.edu/`.
+**Estimated duration on a clean run:** 30-60 minutes once the cluster
+is bootstrapped. The original first run hit 4-6 hours of recovery from
+gotchas now baked into the procedure.
 
 This is a runbook, not a tutorial — it assumes you have read
 `current-state.md`, `service-vip-and-naming.md`, and `bootstrap.md` for
@@ -16,8 +17,20 @@ context.
 ## Pre-conditions (must all be true)
 
 - All 5 mgmt cluster nodes are `Ready` (`kubectl get nodes`)
-- Cilium 1.19 is running with `gatewayAPI.enabled: true`
-- All 5 Gateway API CRDs are installed
+- Cilium 1.19 is running with `gatewayAPI.enabled: true`,
+  `gatewayClass.create: "true"`, `l2announcements: true`, `hubble` enabled
+  (all set in `src/kub-mgmt/cilium-helmchartconfig.yaml` and applied at
+  first boot via the seed-only manifest drop)
+- **All 6 Gateway API CRDs installed**: 5 from the standard channel
+  (gatewayclasses, gateways, httproutes, grpcroutes, referencegrants)
+  PLUS experimental TLSRoute. Cilium 1.19's operator hard-requires
+  TLSRoute for scheme registration even on clusters that don't
+  functionally use it — without it, GatewayClass never gets created.
+- `kubectl get gatewayclass` returns `cilium    ...    Accepted=True`
+- `kubectl -n kube-system get pods | grep hubble` shows hubble-relay
+  and hubble-ui Running
+- Pod IPs in `100.64.0.0/20`, service IPs in `100.64.16.0/20` (per
+  `cidr-plan.md` after the 2026-05-04 pivot off 192.168/16)
 - `profile: cis` is enabled (PSA `restricted` cluster-wide,
   default-deny ingress NetworkPolicy in every namespace)
 - Wildcard cert files for `*.rc.ufl.edu` available on the seed node
@@ -27,7 +40,8 @@ context.
   InfoBlox writable for any externally-exposed services (none in this
   runbook — mgmt cluster is internal-only)
 - Working directory on the seed is the local checkout of `src/kub-mgmt/`,
-  or files have been scp'd there
+  or files have been scp'd there (commonly to `/root/helm/` — adjust
+  path prefixes in apply commands if so)
 
 ---
 
@@ -48,45 +62,38 @@ time:
 
 ---
 
-## Phase 1 — Enable Cilium L2 announcements + create LB pools
+## Phase 1 — Apply LB pools + smoke-test L2 announcements
 
 **Goal:** Services of type `LoadBalancer` get assigned IPs from a pool
 and are reachable from the network.
 
-### 1a. Update Cilium values
+### 1a. Verify Cilium values are already in effect (set at bootstrap)
 
-`src/kub-mgmt/cilium-helmchartconfig.yaml` adds `l2announcements: true`,
-bumps `k8sClientRateLimit` to 50/100 (required — defaults of 5/10 throttle
-under L2 announce lease churn).
+`src/kub-mgmt/cilium-helmchartconfig.yaml` was applied at first boot
+with `l2announcements: true`, `k8sClientRateLimit: 50/100`, and Hubble
+enabled. Confirm the ConfigMap reflects them:
 
 ```bash
-kubectl diff  -f src/kub-mgmt/cilium-helmchartconfig.yaml
-kubectl apply -f src/kub-mgmt/cilium-helmchartconfig.yaml
+kubectl -n kube-system get cm cilium-config -o yaml | \
+  grep -E "enable-l2-announcements|k8s-client-qps|k8s-client-burst|enable-hubble"
+# Expect: enable-l2-announcements: "true"
+#         k8s-client-burst: "100"
+#         k8s-client-qps: "50"
+#         enable-hubble: "true"
 ```
 
-The HelmChartConfig CR was originally created by RKE2's manifest deploy
-controller, which doesn't set `last-applied-configuration`. First
-`kubectl apply` shows a benign warning about that and patches it in.
-
-**Critical step:** the helm-controller updates the Cilium ConfigMap, but
-existing pods don't pick up the new flags until they restart. L2
-announcement subsystem initializes at startup. Bounce both:
+If any are missing, the `cilium-helmchartconfig.yaml` didn't get dropped
+on the seed before first start. Reapply via `kubectl apply -f` and bounce
+the operator + agent DaemonSet:
 
 ```bash
+kubectl apply -f src/kub-mgmt/cilium-helmchartconfig.yaml
 kubectl -n kube-system delete pod -l io.cilium/app=operator
 kubectl -n kube-system rollout restart ds/cilium
 kubectl -n kube-system rollout status ds/cilium --timeout=2m
 ```
 
-### 1b. Verify the values landed
-
-```bash
-kubectl -n kube-system get cm cilium-config -o yaml | \
-  grep -E "enable-l2-announcements|k8s-client-qps|k8s-client-burst"
-# Expect: enable-l2-announcements: "true"
-#         k8s-client-burst: "100"
-#         k8s-client-qps: "50"
-```
+### 1b. (Skipped — verification handled in 1a)
 
 ### 1c. Apply LB pools and L2 policies
 
@@ -229,22 +236,45 @@ curl -v https://rancher.rc.ufl.edu/ 2>&1 | head -30
 **Goal:** Rancher running at `https://rancher.rc.ufl.edu/`,
 auto-discovers the mgmt cluster as `local`.
 
-### 4a. Pre-create cattle-system with PSA `baseline`
+### 4a. Pre-create ALL Rancher-managed namespaces with right PSA labels
 
 **Order matters.** The HelmChart's `createNamespace: true` creates
 cattle-system with default labels (PSA `restricted`, inherited from
-cluster default). Rancher pods don't satisfy `restricted` — they get
-admission-rejected and the install hangs forever, leaving stale
-webhook configurations behind. Always pre-create the namespace.
+cluster default). Rancher pods don't satisfy `restricted` — and
+`baseline` isn't enough either: `system-upgrade-controller` mounts
+hostPath (`/etc/ssl`, `/etc/pki`, `/etc/ca-certificates`), which is
+forbidden under baseline. **cattle-system must be `privileged`.**
+
+`rancher-managed-namespaces.yaml` pre-creates all the namespaces
+Rancher (and its add-ons) will create, with PSA tuned per what each
+workload actually needs:
+
+| Namespace | PSA | Why |
+|---|---|---|
+| `cattle-system` | `privileged` | system-upgrade-controller mounts hostPath |
+| `cattle-monitoring-system` | `privileged` | node-exporter mounts /proc, /sys |
+| `cattle-logging-system` | `privileged` | FluentBit mounts /var/log |
+| `cattle-fleet-system` | `baseline` | runs as root, no hostPath |
+| `cattle-fleet-local-system` | `baseline` | same |
+| `cattle-impersonation-system` | `baseline` | same |
+| `cattle-resources-system` | `baseline` | rancher-backup operator |
+
+Apply:
 
 ```bash
-kubectl apply -f src/kub-mgmt/cattle-system-namespace.yaml
+kubectl apply -f src/kub-mgmt/rancher-managed-namespaces.yaml
 
 kubectl get namespace cattle-system -o jsonpath='{.metadata.labels}' ; echo
-# Expect: pod-security.kubernetes.io/enforce=baseline
-#         pod-security.kubernetes.io/audit=baseline
-#         pod-security.kubernetes.io/warn=baseline
+# Expect: pod-security.kubernetes.io/enforce=privileged (NOT baseline)
 ```
+
+(The older `src/kub-mgmt/cattle-system-namespace.yaml` was the first
+attempt — it set cattle-system to `baseline`, which got us further than
+default `restricted` but still rejected system-upgrade-controller pods
+when Rancher tried to enable it. Replaced by
+`rancher-managed-namespaces.yaml` which covers all the namespaces
+correctly. Don't apply both — `rancher-managed-namespaces.yaml`
+supersedes.)
 
 ### 4b. Pin the Rancher version
 
@@ -311,18 +341,24 @@ deadlocks. Tear down and redo from a clean slate.
 
 ```bash
 kubectl -n cattle-system describe rs $(kubectl -n cattle-system get rs -l app=rancher -o name | head -1)
-# Look for: "violates PodSecurity \"restricted:latest\""
+# Look for: "violates PodSecurity \"restricted:latest\"" or "violates ... baseline"
 ```
 
-**Fix**: cattle-system was created without PSA `baseline` labels. Apply
-the namespace manifest:
+**Fix**: cattle-system (and possibly the other Rancher-managed namespaces)
+were created without the right PSA labels — by chart auto-create rather
+than from `rancher-managed-namespaces.yaml`. Apply the comprehensive
+manifest now:
 
 ```bash
-kubectl apply -f src/kub-mgmt/cattle-system-namespace.yaml
+kubectl apply -f src/kub-mgmt/rancher-managed-namespaces.yaml
 ```
 
-If a Rancher webhook configuration was already registered, this will
-fail because the webhook has no endpoints. Go to recovery mode 2.
+This is idempotent; existing namespaces just get their labels updated.
+Pods stuck pending admission start scheduling within seconds.
+
+If a Rancher webhook configuration was already registered, the namespace
+update may fail because the webhook has no endpoints. Go to recovery
+mode 2.
 
 ### Failure mode 2: webhook deadlock blocks namespace updates
 
@@ -411,14 +447,68 @@ kubectl get clusterrolebinding | grep -iE "cattle|rancher" | grep -vE 'k3s|helm-
 kubectl get apiservice         | grep -iE "cattle|rancher" | grep -vE 'k3s|helm.cattle'
 # All four should be empty.
 
-# 8. Recreate namespace with PSA baseline labels
-kubectl apply -f src/kub-mgmt/cattle-system-namespace.yaml
+# 8. Recreate Rancher-managed namespaces with right per-namespace PSA labels
+kubectl apply -f src/kub-mgmt/rancher-managed-namespaces.yaml
 
 # 9. Reapply HelmChart
 kubectl apply -f src/kub-mgmt/rancher-helmchart.yaml
 ```
 
-### Failure mode 4: accidentally deleted RKE2 system CRDs
+### Failure mode 4: GatewayClass never gets Accepted=True after Phase 5a
+
+Symptom on a fresh build: `kubectl get gatewayclass` returns `No resources found` even after the operator has been bounced post-CRD install.
+
+```bash
+# Check operator logs
+kubectl -n kube-system logs -l io.cilium/app=operator --tail=200 | grep -iE 'tlsroute|gateway-api|gatewayclass'
+```
+
+If you see `no kind is registered for the type v1alpha2.TLSRouteList`:
+the experimental TLSRoute CRD wasn't installed. Cilium 1.19's operator
+registers `TLSRouteList` in its Go scheme regardless of whether you use
+TLSRoute functionally. Without the CRD, the gateway-api reconcile loop
+spins on errors and GatewayClass creation never completes.
+
+```bash
+GW=https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.2.0/config/crd
+kubectl apply -f ${GW}/experimental/gateway.networking.k8s.io_tlsroutes.yaml
+kubectl -n kube-system delete pod -l io.cilium/app=operator
+sleep 30
+kubectl get gatewayclass
+# Expect: cilium    Accepted=True
+```
+
+If TLSRoute is present and the operator looks healthy but GatewayClass
+still doesn't appear, the helm values need `gatewayClass.create: "true"`:
+
+```yaml
+# In src/kub-mgmt/cilium-helmchartconfig.yaml under spec.valuesContent:
+gatewayAPI:
+  enabled: true
+  gatewayClass:
+    create: "true"      # ← this is what auto-creates the GatewayClass
+```
+
+Then `kubectl apply -f src/kub-mgmt/cilium-helmchartconfig.yaml` and
+bounce the operator. Or as a one-shot fix, create the GatewayClass
+manually:
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cilium
+spec:
+  controllerName: io.cilium/gateway-controller
+EOF
+```
+
+Both fixes coexist — set `gatewayClass.create: "true"` in values for
+future reproducibility AND apply the GatewayClass manually to unblock
+the current build.
+
+### Failure mode 5: accidentally deleted RKE2 system CRDs
 
 If your cleanup grep was too broad and you nuked
 `addons.k3s.cattle.io`, `etcdsnapshotfiles.k3s.cattle.io`,
@@ -459,6 +549,7 @@ After this runbook completes:
 | K8s API | https://vkub-mgmt.ufhpc:6443/ | kubeconfig (via Rancher or direct) |
 
 Cluster has:
+- CIDRs: pod 100.64.0.0/20, service 100.64.16.0/20 (per cidr-plan.md)
 - Cilium L2 announcements active on both interfaces (mgmt + VM)
 - Two LB pools (mgmt-pool 172.16.192.7-9, vm-pool 10.13.160.7-9)
 - One Cilium Gateway with wildcard TLS termination
@@ -466,4 +557,22 @@ Cluster has:
 
 Next phases (post-Rancher): cert-manager + ACME (Phase 2), workload
 clusters (gpu, infra) bootstrapped via Rancher and `bootstrap-cluster.sh`,
-Vault stand-up on dedicated VMware VMs, Keycloak SSO.
+Vault stand-up on dedicated VMware VMs, Keycloak/Shibboleth SSO.
+
+---
+
+## Lessons from the first build (already baked into procedures above)
+
+These are documented here for context — the corrected procedures above
+already account for them. Listed so a future operator reading this
+runbook understands why specific steps exist.
+
+| Lesson | Why it bit | Where it's now handled |
+|---|---|---|
+| Pod CIDR 192.168.16.0/20 collided with `hpg-roce` storage subnet | Original cidr-plan assumed 192.168/16 was free; environment had many existing subnets there. Dormant collision until storage CSI added connectivity. | Pivoted to 100.64.0.0/10 (RFC6598). See `cidr-plan.md`. |
+| TLSRoute CRD missing → GatewayClass never created | Earlier guidance excluded TLSRoute as "not needed for mgmt." Cilium 1.19's operator registers `TLSRouteList` in its scheme regardless of use. | `bootstrap.md` Phase 5 now installs all 6 CRDs (5 standard + experimental TLSRoute). |
+| GatewayClass not auto-created even with CRDs in place | Default helm value for `gatewayAPI.gatewayClass.create` doesn't always trigger creation. | `cilium-helmchartconfig.yaml` explicitly sets `gatewayClass.create: "true"`. |
+| `ufrc_rke2` Puppet `fail()` aborted catalog when interfaces named differently at first run (kickstart-time vs post-boot udev rename) | Hard fail on missing interface IP blocked all other Puppet resources from applying. | Soft-skip with notice() in `src/ufrc_rke2/manifests/config.pp`; bootstrap.md Prerequisites verifies node-ip after first puppet run. |
+| Rancher install hung with cattle-system at default PSA `restricted` | Chart auto-created cattle-system with cluster-default labels; Rancher pods don't satisfy restricted; admission rejected; webhook deadlock. | Pre-create namespaces from `rancher-managed-namespaces.yaml` BEFORE `rancher-helmchart.yaml`. cattle-system is `privileged` (not baseline — system-upgrade-controller's hostPath mounts need it). |
+| Cleanup grep hit RKE2 system CRDs | `grep -i "cattle"` matched `addons.k3s.cattle.io`, `helmchartconfigs.helm.cattle.io`, etc. | All cleanup commands use `grep -E '\.cattle\.io$' \| grep -vE 'k3s\.cattle\.io\|helm\.cattle\.io'` to exclude system CRDs. |
+| L2 announce subsystem didn't initialize after enabling at runtime | Cilium pods cached old config until restart. | Restart cilium-operator + agent DaemonSet after applying values changes that affect startup-time features (now in Phase 1a). |

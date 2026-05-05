@@ -365,7 +365,7 @@ If the prior cluster had any of these applied, re-apply them now:
 - `src/kub-mgmt/cilium-l2-pools.yaml` — LoadBalancer IP pools
 - `src/kub-mgmt/cnpg-operator-helmchart.yaml` — CloudNativePG operator
 - `src/kub-mgmt/rancher-helmchart.yaml` — Rancher itself (if it was running on this cluster)
-- `src/kub-mgmt/cattle-system-namespace.yaml` and the rancher-* policy/route files
+- `src/kub-mgmt/rancher-managed-namespaces.yaml` and the rancher-* policy/route files
 - `src/kub-mgmt/gateway.yaml` — if a cluster-level Gateway resource exists
 - Anything else under `src/kub-mgmt/` that was applied to the prior cluster
 

@@ -187,7 +187,7 @@ attempt — recovery took ~3 hours.
 **What to do**:
 
 - Add a step to `bootstrap.md` (or a future `mgmt-cluster-runbook.md`)
-  that explicitly applies `src/kub-mgmt/cattle-system-namespace.yaml`
+  that explicitly applies `src/kub-mgmt/rancher-managed-namespaces.yaml`
   BEFORE applying `rancher-helmchart.yaml`. This is documented in
   `First_run.md` Phase 4 but should also be enforced in any
   scripted/automated install path.
